@@ -1,0 +1,214 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ========================================
+// 事業者設定（発行者情報）
+// ========================================
+model BusinessInfo {
+  id                    String   @id @default("default")
+  businessName          String   @default("")
+  tradeName             String   @default("") // 屋号
+  representativeName    String   @default("")
+  postalCode            String   @default("")
+  address               String   @default("")
+  phone                 String   @default("")
+  email                 String   @default("")
+  invoiceRegistrationNo String   @default("") // 適格請求書発行事業者登録番号
+  logoPath              String   @default("")
+  sealPath              String   @default("") // 印影画像
+  defaultHonorific      String   @default("御中")
+  defaultNotes          String   @default("")
+  taxCalculation        String   @default("exclusive") // exclusive(外税) / inclusive(内税)
+  roundingMethod        String   @default("floor") // floor / ceil / round
+  defaultPaymentTerms   String   @default("")
+  defaultBankAccountId  String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+// ========================================
+// 取引先マスタ
+// ========================================
+model Client {
+  id              String     @id @default(cuid())
+  name            String
+  clientType      String     @default("corporate") // corporate / individual
+  department      String     @default("")
+  contactPerson   String     @default("")
+  honorific       String     @default("御中") // 御中 / 様
+  postalCode      String     @default("")
+  address         String     @default("")
+  phone           String     @default("")
+  email           String     @default("")
+  paymentTerms    String     @default("")
+  defaultSubject  String     @default("")
+  defaultNotes    String     @default("")
+  tags            String     @default("") // comma-separated
+  bankAccountId   String?
+  isArchived      Boolean    @default(false)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  documents       Document[]
+}
+
+// ========================================
+// 品目マスタ
+// ========================================
+model Product {
+  id              String   @id @default(cuid())
+  name            String
+  description     String   @default("")
+  unitPrice       Float    @default(0)
+  unit            String   @default("") // 個, 式, 時間, etc.
+  taxRate         Float    @default(10)
+  defaultQuantity Float    @default(1)
+  sortOrder       Int      @default(0)
+  tags            String   @default("") // comma-separated
+  isArchived      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// ========================================
+// 振込先マスタ
+// ========================================
+model BankAccount {
+  id            String   @id @default(cuid())
+  bankName      String
+  branchName    String   @default("")
+  accountType   String   @default("ordinary") // ordinary(普通) / checking(当座) / savings(貯蓄)
+  accountNumber String   @default("")
+  accountHolder String   @default("")
+  displayText   String   @default("") // 表示用整形テキスト
+  isDefault     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// ========================================
+// 帳票本体
+// ========================================
+model Document {
+  id                String         @id @default(cuid())
+  documentType      String         // estimate / delivery_note / invoice / receipt
+  documentNumber    String
+  status            String         @default("draft") // draft / issued / sent / paid / receipted / archived
+
+  issueDate         DateTime
+  // 見積書
+  validUntil        DateTime?
+  // 納品書
+  deliveryDate      DateTime?
+  deliveryPlace     String?
+  // 請求書
+  paymentDueDate    DateTime?
+  bankAccountId     String?
+  bankAccountText   String         @default("")
+  withholdingTax    Boolean        @default(false)
+  withholdingAmount Float          @default(0)
+  // 領収書
+  receiptDate       DateTime?
+  addressee         String?        // 宛名
+  proviso           String?        // 但し書き
+  paymentMethod     String?        // cash / transfer / card / other
+  isReissue         Boolean        @default(false)
+  showStampNotice   Boolean        @default(false) // 収入印紙注意文
+
+  clientId          String?
+  client            Client?        @relation(fields: [clientId], references: [id])
+  clientDisplayName String         @default("")
+  clientDepartment  String         @default("")
+  clientContactName String         @default("")
+  clientHonorific   String         @default("御中")
+  clientAddress     String         @default("")
+
+  subject           String         @default("")
+  notes             String         @default("") // 備考
+  internalMemo      String         @default("") // 内部メモ
+  tags              String         @default("") // comma-separated
+
+  subtotal          Float          @default(0)
+  taxAmount         Float          @default(0)
+  totalAmount       Float          @default(0)
+
+  pdfPath           String         @default("")
+  sourceJson        String         @default("") // 発行時のスナップショット
+
+  sourceDocumentId  String?        // 変換元書類ID
+  relatedDocIds     String         @default("") // comma-separated
+
+  items             DocumentItem[]
+
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@unique([documentType, documentNumber])
+  @@index([documentType])
+  @@index([clientId])
+  @@index([status])
+  @@index([issueDate])
+}
+
+// ========================================
+// 明細行
+// ========================================
+model DocumentItem {
+  id          String   @id @default(cuid())
+  documentId  String
+  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  sortOrder   Int      @default(0)
+  date        DateTime? // 納品日（請求書で任意表示）
+  productName String   @default("")
+  description String   @default("")
+  unitPrice   Float    @default(0)
+  quantity    Float    @default(1)
+  unit        String   @default("")
+  taxRate     Float    @default(10)
+  taxCategory String   @default("taxable_10") // taxable_10 / taxable_8 / exempt / non_target
+  amount      Float    @default(0) // 行小計
+  memo        String   @default("")
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([documentId])
+}
+
+// ========================================
+// 採番管理
+// ========================================
+model NumberSequence {
+  id           String @id @default(cuid())
+  documentType String @unique // estimate / delivery_note / invoice / receipt
+  prefix       String @default("")
+  yearReset    Boolean @default(true)
+  currentYear  Int    @default(2026)
+  currentSeq   Int    @default(0)
+  digits       Int    @default(4)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// ========================================
+// アプリ設定
+// ========================================
+model AppSettings {
+  id                 String  @id @default("default")
+  showLogo           Boolean @default(true)
+  showSeal           Boolean @default(true)
+  defaultMarginTop   Float   @default(10)
+  defaultMarginRight Float   @default(10)
+  defaultMarginBottom Float  @default(10)
+  defaultMarginLeft  Float   @default(10)
+  showDeliveryDate   Boolean @default(true)
+  showItemDate       Boolean @default(false)
+  showItemMemo       Boolean @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
