@@ -4,6 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+
 async function getStats() {
   const [estimates, deliveryNotes, invoices, receipts] = await Promise.all([
     prisma.document.count({ where: { documentType: "estimate", status: { not: "archived" } } }),
