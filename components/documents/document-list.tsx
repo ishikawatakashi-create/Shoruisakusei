@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams, type ReadonlyURLSearchParams } from "next/navigation";
 import { toast } from "sonner";
@@ -126,7 +126,7 @@ function buildUrlSearchParams(state: ListState) {
   return params;
 }
 
-export function DocumentList({ documentType, basePath }: DocumentListProps) {
+function DocumentListContent({ documentType, basePath }: DocumentListProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -570,5 +570,13 @@ export function DocumentList({ documentType, basePath }: DocumentListProps) {
         </div>
       )}
     </div>
+  );
+}
+
+export function DocumentList(props: DocumentListProps) {
+  return (
+    <Suspense fallback={<div className="p-6 animate-pulse">読み込み中...</div>}>
+      <DocumentListContent {...props} />
+    </Suspense>
   );
 }
