@@ -7,20 +7,31 @@ import { prisma } from "@/lib/prisma";
 export const dynamic = "force-dynamic";
 
 async function getStats() {
-  const [estimates, deliveryNotes, invoices, receipts] = await Promise.all([
-    prisma.document.count({ where: { documentType: "estimate", status: { not: "archived" } } }),
-    prisma.document.count({ where: { documentType: "delivery_note", status: { not: "archived" } } }),
-    prisma.document.count({ where: { documentType: "invoice", status: { not: "archived" } } }),
-    prisma.document.count({ where: { documentType: "receipt", status: { not: "archived" } } }),
-  ]);
+  try {
+    const [estimates, deliveryNotes, invoices, receipts] = await Promise.all([
+      prisma.document.count({ where: { documentType: "estimate", status: { not: "archived" } } }),
+      prisma.document.count({ where: { documentType: "delivery_note", status: { not: "archived" } } }),
+      prisma.document.count({ where: { documentType: "invoice", status: { not: "archived" } } }),
+      prisma.document.count({ where: { documentType: "receipt", status: { not: "archived" } } }),
+    ]);
 
-  const recentDocs = await prisma.document.findMany({
-    orderBy: { updatedAt: "desc" },
-    take: 5,
-    include: { client: true },
-  });
+    const recentDocs = await prisma.document.findMany({
+      orderBy: { updatedAt: "desc" },
+      take: 5,
+      include: { client: true },
+    });
 
-  return { estimates, deliveryNotes, invoices, receipts, recentDocs };
+    return { estimates, deliveryNotes, invoices, receipts, recentDocs, dbError: false as const };
+  } catch {
+    return {
+      estimates: 0,
+      deliveryNotes: 0,
+      invoices: 0,
+      receipts: 0,
+      recentDocs: [],
+      dbError: true as const,
+    };
+  }
 }
 
 const docTypes = [
@@ -41,6 +52,11 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-5">
+      {stats.dbError && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          データベースに接続できません。Vercel の環境変数に <code className="rounded bg-amber-100 px-1">DATABASE_URL</code> を設定するか、ローカルで起動してください。
+        </div>
+      )}
       {/* Summary Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {docTypes.map((dt) => {
