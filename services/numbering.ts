@@ -71,6 +71,14 @@ export async function reserveDocumentNumber(
   throw new Error("採番に失敗しました");
 }
 
+/** 書類番号を採番する（reserveDocumentNumber のエイリアス）。API・サービスから利用。 */
+export async function generateDocumentNumber(
+  documentType: DocumentType,
+  client: NumberingClient = prisma
+): Promise<string> {
+  return reserveDocumentNumber(documentType, client);
+}
+
 export async function isDocumentNumberUnique(
   documentType: DocumentType,
   documentNumber: string,
