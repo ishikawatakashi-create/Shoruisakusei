@@ -44,7 +44,7 @@ const systemItems: NavItem[] = [
 ];
 
 function SidebarItem({ item }: { item: NavItem }) {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? "";
   const isActive = item.href === "/"
     ? pathname === "/"
     : pathname === item.href || pathname.startsWith(item.href + "/");

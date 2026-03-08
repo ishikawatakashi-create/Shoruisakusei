@@ -90,7 +90,7 @@ function getPageTitle(pathname: string): string {
 }
 
 export function Header() {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? "";
   const breadcrumbs = getBreadcrumbs(pathname);
   const title = getPageTitle(pathname);
 
