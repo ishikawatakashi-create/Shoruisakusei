@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "tsx --test tests/**/*.test.ts",
     "postinstall": "prisma generate && node scripts/patch-prisma.cjs",
     "db:generate": "prisma generate && node scripts/patch-prisma.cjs",
     "db:push": "prisma db push",

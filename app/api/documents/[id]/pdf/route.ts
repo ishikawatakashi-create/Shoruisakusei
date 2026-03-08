@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toErrorResponse } from "@/lib/api-errors";
 import { generatePdf } from "@/services/pdf";
 
 export async function POST(
@@ -9,11 +10,7 @@ export async function POST(
   try {
     const pdfPath = await generatePdf(id);
     return NextResponse.json({ url: pdfPath, path: pdfPath });
-  } catch (e) {
-    console.error("PDF generation error:", e);
-    return NextResponse.json(
-      { error: "PDF generation failed" },
-      { status: 500 }
-    );
+  } catch (error) {
+    return toErrorResponse(error);
   }
 }

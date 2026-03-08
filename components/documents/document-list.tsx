@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams, type ReadonlyURLSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,24 +29,24 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { DocumentType, DocumentStatus } from "@/types/document";
+import type { DocumentSortField, DocumentStatus, DocumentType } from "@/types/document";
 import {
-  DOCUMENT_TYPE_LABELS,
-  DOCUMENT_STATUS_LABELS,
   CONVERSION_MAP,
+  DOCUMENT_STATUS_LABELS,
+  DOCUMENT_TYPE_LABELS,
 } from "@/types/document";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import {
-  Plus,
-  Search,
-  MoreHorizontal,
-  Pencil,
+  Archive,
+  ArrowRightLeft,
   Copy,
   FileDown,
   FileText,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  Search,
   Trash2,
-  ArrowRightLeft,
-  Archive,
 } from "lucide-react";
 
 interface DocumentListProps {
@@ -66,7 +66,20 @@ interface DocumentRow {
   tags: string;
 }
 
-const STATUS_BADGE_VARIANT: Record<string, "default" | "secondary" | "outline" | "success" | "warning" | "info" | "destructive"> = {
+interface ListState {
+  search: string;
+  statusFilter: string;
+  dateFrom: string;
+  dateTo: string;
+  sortBy: DocumentSortField;
+  page: number;
+  perPage: number;
+}
+
+const STATUS_BADGE_VARIANT: Record<
+  string,
+  "default" | "secondary" | "outline" | "success" | "warning" | "info" | "destructive"
+> = {
   draft: "secondary",
   issued: "info",
   sent: "warning",
@@ -75,59 +88,196 @@ const STATUS_BADGE_VARIANT: Record<string, "default" | "secondary" | "outline" |
   archived: "outline",
 };
 
+const DEFAULT_SORT_BY: DocumentSortField = "updatedAt";
+const DEFAULT_PER_PAGE = 50;
+const SEARCH_DEBOUNCE_MS = 300;
+const SORT_FIELDS: DocumentSortField[] = ["updatedAt", "issueDate", "createdAt", "totalAmount"];
+
+function parsePositiveInt(value: string | null, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseSortBy(value: string | null): DocumentSortField {
+  return SORT_FIELDS.includes(value as DocumentSortField) ? (value as DocumentSortField) : DEFAULT_SORT_BY;
+}
+
+function readListState(searchParams: ReadonlyURLSearchParams): ListState {
+  return {
+    search: searchParams.get("search") ?? "",
+    statusFilter: searchParams.get("status") ?? "all",
+    dateFrom: searchParams.get("dateFrom") ?? "",
+    dateTo: searchParams.get("dateTo") ?? "",
+    sortBy: parseSortBy(searchParams.get("sortBy")),
+    page: parsePositiveInt(searchParams.get("page"), 1),
+    perPage: parsePositiveInt(searchParams.get("perPage"), DEFAULT_PER_PAGE),
+  };
+}
+
+function buildUrlSearchParams(state: ListState) {
+  const params = new URLSearchParams();
+  if (state.search) params.set("search", state.search);
+  if (state.statusFilter !== "all") params.set("status", state.statusFilter);
+  if (state.dateFrom) params.set("dateFrom", state.dateFrom);
+  if (state.dateTo) params.set("dateTo", state.dateTo);
+  if (state.sortBy !== DEFAULT_SORT_BY) params.set("sortBy", state.sortBy);
+  if (state.page !== 1) params.set("page", String(state.page));
+  if (state.perPage !== DEFAULT_PER_PAGE) params.set("perPage", String(state.perPage));
+  return params;
+}
+
 export function DocumentList({ documentType, basePath }: DocumentListProps) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const initialState = readListState(searchParams);
+
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [sortBy, setSortBy] = useState("updatedAt");
-
-  const fetchDocuments = useCallback(async () => {
-    setLoading(true);
-    const params = new URLSearchParams({
-      type: documentType,
-      sortBy,
-      sortOrder: "desc",
-    });
-    if (search) params.set("search", search);
-    if (statusFilter && statusFilter !== "all") params.set("status", statusFilter);
-    if (dateFrom) params.set("dateFrom", dateFrom);
-    if (dateTo) params.set("dateTo", dateTo);
-
-    const res = await fetch(`/api/documents?${params}`);
-    const data = await res.json();
-    setDocuments(data.documents || []);
-    setTotal(data.total || 0);
-    setLoading(false);
-  }, [documentType, search, statusFilter, dateFrom, dateTo, sortBy]);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [searchInput, setSearchInput] = useState(initialState.search);
+  const [search, setSearch] = useState(initialState.search);
+  const [statusFilter, setStatusFilter] = useState(initialState.statusFilter);
+  const [dateFrom, setDateFrom] = useState(initialState.dateFrom);
+  const [dateTo, setDateTo] = useState(initialState.dateTo);
+  const [sortBy, setSortBy] = useState<DocumentSortField>(initialState.sortBy);
+  const [page, setPage] = useState(initialState.page);
+  const [perPage, setPerPage] = useState(initialState.perPage);
 
   useEffect(() => {
-    fetchDocuments();
-  }, [fetchDocuments]);
+    const nextState = readListState(searchParams);
+    setSearchInput((current) => (current === nextState.search ? current : nextState.search));
+    setSearch((current) => (current === nextState.search ? current : nextState.search));
+    setStatusFilter((current) => (current === nextState.statusFilter ? current : nextState.statusFilter));
+    setDateFrom((current) => (current === nextState.dateFrom ? current : nextState.dateFrom));
+    setDateTo((current) => (current === nextState.dateTo ? current : nextState.dateTo));
+    setSortBy((current) => (current === nextState.sortBy ? current : nextState.sortBy));
+    setPage((current) => (current === nextState.page ? current : nextState.page));
+    setPerPage((current) => (current === nextState.perPage ? current : nextState.perPage));
+  }, [searchParams]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setSearch((current) => (current === searchInput ? current : searchInput));
+    }, SEARCH_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [searchInput]);
+
+  useEffect(() => {
+    const nextParams = buildUrlSearchParams({
+      search,
+      statusFilter,
+      dateFrom,
+      dateTo,
+      sortBy,
+      page,
+      perPage,
+    }).toString();
+
+    if (nextParams === searchParams.toString()) {
+      return;
+    }
+
+    router.replace(nextParams ? `${pathname}?${nextParams}` : pathname, { scroll: false });
+  }, [dateFrom, dateTo, page, pathname, perPage, router, search, searchParams, sortBy, statusFilter]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function fetchDocuments() {
+      setLoading(true);
+
+      try {
+        const params = new URLSearchParams({
+          type: documentType,
+          sortBy,
+          sortOrder: "desc",
+          page: String(page),
+          perPage: String(perPage),
+        });
+        if (search) params.set("search", search);
+        if (statusFilter !== "all") params.set("status", statusFilter);
+        if (dateFrom) params.set("dateFrom", dateFrom);
+        if (dateTo) params.set("dateTo", dateTo);
+
+        const res = await fetch(`/api/documents?${params.toString()}`, {
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+          throw new Error("書類一覧の取得に失敗しました");
+        }
+
+        const data = await res.json();
+        const nextTotal = data.total || 0;
+        const nextTotalPages = Math.max(1, Math.ceil(nextTotal / perPage));
+
+        if (nextTotal > 0 && page > nextTotalPages) {
+          setPage(nextTotalPages);
+          return;
+        }
+
+        setDocuments(data.documents || []);
+        setTotal(nextTotal);
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        console.error(error);
+        toast.error("一覧の取得に失敗しました");
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void fetchDocuments();
+    return () => controller.abort();
+  }, [dateFrom, dateTo, documentType, page, perPage, refreshKey, search, sortBy, statusFilter]);
+
+  const refreshDocuments = () => {
+    setRefreshKey((current) => current + 1);
+  };
 
   const handleDelete = async (id: string) => {
     if (!confirm("この書類を削除しますか？")) return;
-    await fetch(`/api/documents/${id}`, { method: "DELETE" });
+
+    const res = await fetch(`/api/documents/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      toast.error("削除に失敗しました");
+      return;
+    }
+
     toast.success("削除しました");
-    fetchDocuments();
+    refreshDocuments();
   };
 
   const handleArchive = async (id: string) => {
-    await fetch(`/api/documents/${id}/status`, {
+    const res = await fetch(`/api/documents/${id}/status`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status: "archived" }),
     });
+
+    if (!res.ok) {
+      toast.error("アーカイブに失敗しました");
+      return;
+    }
+
     toast.success("アーカイブしました");
-    fetchDocuments();
+    refreshDocuments();
   };
 
   const handleDuplicate = async (id: string) => {
     const res = await fetch(`/api/documents/${id}/duplicate`, { method: "POST" });
+    if (!res.ok) {
+      toast.error("複製に失敗しました");
+      return;
+    }
+
     const doc = await res.json();
     toast.success("複製しました");
     router.push(`${basePath}/${doc.id}/edit`);
@@ -139,8 +289,14 @@ export function DocumentList({ documentType, basePath }: DocumentListProps) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ targetType }),
     });
+
+    if (!res.ok) {
+      toast.error("変換に失敗しました");
+      return;
+    }
+
     const doc = await res.json();
-    const paths: Record<string, string> = {
+    const paths: Record<DocumentType, string> = {
       estimate: "/estimates",
       delivery_note: "/delivery-notes",
       invoice: "/invoices",
@@ -152,29 +308,46 @@ export function DocumentList({ documentType, basePath }: DocumentListProps) {
 
   const handleGeneratePdf = async (id: string) => {
     const res = await fetch(`/api/documents/${id}/pdf`, { method: "POST" });
-    if (res.ok) {
-      const data = await res.json();
-      window.open(data.url, "_blank");
-      toast.success("PDFを生成しました");
-    } else {
+    if (!res.ok) {
       toast.error("PDF生成に失敗しました");
+      return;
     }
+
+    const data = await res.json();
+    window.open(data.url, "_blank");
+    toast.success("PDFを生成しました");
+  };
+
+  const clearFilters = () => {
+    setSearchInput("");
+    setSearch("");
+    setStatusFilter("all");
+    setDateFrom("");
+    setDateTo("");
+    setSortBy(DEFAULT_SORT_BY);
+    setPage(1);
+    setPerPage(DEFAULT_PER_PAGE);
   };
 
   const conversionTargets = CONVERSION_MAP[documentType] || [];
   const title = DOCUMENT_TYPE_LABELS[documentType];
+  const totalPages = Math.max(1, Math.ceil(total / perPage));
+  const pageStart = total === 0 ? 0 : (page - 1) * perPage + 1;
+  const pageEnd = total === 0 ? 0 : Math.min(page * perPage, total);
 
   return (
     <div className="space-y-4">
-      {/* Toolbar - MF style filter bar */}
-      <div className="flex flex-wrap items-center gap-2 rounded bg-white border border-[#e0e3e7] px-4 py-3 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+      <div className="flex flex-wrap items-center gap-2 rounded border border-[#e0e3e7] bg-white px-4 py-3 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
         <div className="relative flex-1 min-w-[180px] max-w-xs">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#b0b5ba]" />
           <Input
             placeholder="書類番号、取引先名、件名で検索..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-8 h-[30px] text-[12px]"
+            value={searchInput}
+            onChange={(e) => {
+              setSearchInput(e.target.value);
+              setPage(1);
+            }}
+            className="h-[30px] pl-8 text-[12px]"
           />
         </div>
         <div className="flex items-center gap-1.5 text-[12px] text-[#666]">
@@ -182,30 +355,50 @@ export function DocumentList({ documentType, basePath }: DocumentListProps) {
           <Input
             type="date"
             value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
-            className="w-[130px] h-[30px] text-[12px]"
+            onChange={(e) => {
+              setDateFrom(e.target.value);
+              setPage(1);
+            }}
+            className="h-[30px] w-[130px] text-[12px]"
           />
           <span>〜</span>
           <Input
             type="date"
             value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
-            className="w-[130px] h-[30px] text-[12px]"
+            onChange={(e) => {
+              setDateTo(e.target.value);
+              setPage(1);
+            }}
+            className="h-[30px] w-[130px] text-[12px]"
           />
         </div>
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="w-[110px] h-[30px] text-[12px]">
+        <Select
+          value={statusFilter}
+          onValueChange={(value) => {
+            setStatusFilter(value);
+            setPage(1);
+          }}
+        >
+          <SelectTrigger className="h-[30px] w-[110px] text-[12px]">
             <SelectValue placeholder="ステータス" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">すべて</SelectItem>
             {Object.entries(DOCUMENT_STATUS_LABELS).map(([key, label]) => (
-              <SelectItem key={key} value={key}>{label}</SelectItem>
+              <SelectItem key={key} value={key}>
+                {label}
+              </SelectItem>
             ))}
           </SelectContent>
         </Select>
-        <Select value={sortBy} onValueChange={setSortBy}>
-          <SelectTrigger className="w-[100px] h-[30px] text-[12px]">
+        <Select
+          value={sortBy}
+          onValueChange={(value) => {
+            setSortBy(value as DocumentSortField);
+            setPage(1);
+          }}
+        >
+          <SelectTrigger className="h-[30px] w-[100px] text-[12px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -215,20 +408,40 @@ export function DocumentList({ documentType, basePath }: DocumentListProps) {
             <SelectItem value="totalAmount">金額</SelectItem>
           </SelectContent>
         </Select>
-        <Button variant="outline" size="sm" className="h-[30px] text-[12px] text-[#8a8a8a]" onClick={() => { setSearch(""); setStatusFilter("all"); setDateFrom(""); setDateTo(""); }}>
+        <Select
+          value={String(perPage)}
+          onValueChange={(value) => {
+            setPerPage(Number(value));
+            setPage(1);
+          }}
+        >
+          <SelectTrigger className="h-[30px] w-[92px] text-[12px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="20">20件</SelectItem>
+            <SelectItem value="50">50件</SelectItem>
+            <SelectItem value="100">100件</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-[30px] text-[12px] text-[#8a8a8a]"
+          onClick={clearFilters}
+        >
           クリア
         </Button>
         <div className="ml-auto flex items-center gap-2">
           <Link href={`${basePath}/new`}>
-            <Button size="sm" className="gap-1 h-[30px]">
+            <Button size="sm" className="h-[30px] gap-1">
               {title}を作成
             </Button>
           </Link>
         </div>
       </div>
 
-      {/* Table - MF style */}
-      <div className="rounded bg-white border border-[#e0e3e7] shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
+      <div className="overflow-hidden rounded border border-[#e0e3e7] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
         <Table>
           <TableHeader>
             <TableRow className="border-b border-[#e0e3e7]">
@@ -237,25 +450,25 @@ export function DocumentList({ documentType, basePath }: DocumentListProps) {
               <TableHead className="w-28">発行日</TableHead>
               <TableHead>取引先</TableHead>
               <TableHead>件名</TableHead>
-              <TableHead className="text-right w-28">金額</TableHead>
+              <TableHead className="w-28 text-right">金額</TableHead>
               <TableHead className="w-10"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-12 text-[#8a8a8a]">
+                <TableCell colSpan={7} className="py-12 text-center text-[#8a8a8a]">
                   読み込み中...
                 </TableCell>
               </TableRow>
             ) : documents.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-16">
+                <TableCell colSpan={7} className="py-16 text-center">
                   <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-[#f0f2f5]">
                     <FileText className="h-7 w-7 text-[#b0b5ba]" />
                   </div>
-                  <p className="text-[13px] text-[#8a8a8a] mb-1">{title}はありません</p>
-                  <p className="text-[12px] text-[#b0b5ba] mb-3">{title}を作成するにはこちらから</p>
+                  <p className="mb-1 text-[13px] text-[#8a8a8a]">{title}はありません</p>
+                  <p className="mb-3 text-[12px] text-[#b0b5ba]">{title}を作成するにはこちらから</p>
                   <Link href={`${basePath}/new`}>
                     <Button size="sm" className="gap-1">
                       <Plus className="h-3 w-3" />
@@ -266,25 +479,21 @@ export function DocumentList({ documentType, basePath }: DocumentListProps) {
               </TableRow>
             ) : (
               documents.map((doc) => (
-                <TableRow key={doc.id} className="cursor-pointer" onClick={() => router.push(`${basePath}/${doc.id}/edit`)}>
-                  <TableCell className="font-mono text-[12px] text-[#4a9cf5]">
-                    {doc.documentNumber}
-                  </TableCell>
+                <TableRow
+                  key={doc.id}
+                  className="cursor-pointer"
+                  onClick={() => router.push(`${basePath}/${doc.id}/edit`)}
+                >
+                  <TableCell className="font-mono text-[12px] text-[#4a9cf5]">{doc.documentNumber}</TableCell>
                   <TableCell>
                     <Badge variant={STATUS_BADGE_VARIANT[doc.status] || "secondary"}>
                       {DOCUMENT_STATUS_LABELS[doc.status as DocumentStatus] || doc.status}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-[12px] text-[#666]">
-                    {formatDate(doc.issueDate)}
-                  </TableCell>
-                  <TableCell>
-                    {doc.clientDisplayName}
-                  </TableCell>
+                  <TableCell className="text-[12px] text-[#666]">{formatDate(doc.issueDate)}</TableCell>
+                  <TableCell>{doc.clientDisplayName}</TableCell>
                   <TableCell className="text-[#666]">{doc.subject}</TableCell>
-                  <TableCell className="text-right font-medium">
-                    {formatCurrency(doc.totalAmount)}
-                  </TableCell>
+                  <TableCell className="text-right font-medium">{formatCurrency(doc.totalAmount)}</TableCell>
                   <TableCell>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
@@ -331,8 +540,33 @@ export function DocumentList({ documentType, basePath }: DocumentListProps) {
       </div>
 
       {total > 0 && (
-        <div className="text-[12px] text-[#8a8a8a]">
-          {total}件の{title}
+        <div className="flex flex-wrap items-center justify-between gap-3 text-[12px] text-[#8a8a8a]">
+          <div>
+            {total}件中 {pageStart}-{pageEnd}件の{title}
+          </div>
+          <div className="flex items-center gap-2">
+            <span>
+              {page}/{totalPages}ページ
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-[30px] text-[12px]"
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={page <= 1}
+            >
+              前へ
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-[30px] text-[12px]"
+              onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+              disabled={page >= totalPages}
+            >
+              次へ
+            </Button>
+          </div>
         </div>
       )}
     </div>

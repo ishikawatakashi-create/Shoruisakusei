@@ -17,7 +17,7 @@ export default function BackupPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `backup_${new Date().toISOString().split("T")[0]}.json`;
+      a.download = `backup_${new Date().toISOString().split("T")[0]}.zip`;
       a.click();
       URL.revokeObjectURL(url);
       toast.success("エクスポートしました");
@@ -31,11 +31,11 @@ export default function BackupPage() {
     if (!file) return;
     setImporting(true);
     try {
-      const text = await file.text();
+      const formData = new FormData();
+      formData.append("file", file);
       const res = await fetch("/api/backup/import", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: text,
+        body: formData,
       });
       if (res.ok) {
         toast.success("インポートしました。ページをリロードしてください。");
@@ -58,13 +58,13 @@ export default function BackupPage() {
             データエクスポート
           </CardTitle>
           <CardDescription>
-            全てのデータをJSONファイルとしてエクスポートします。
+            データベースに加え、アップロード画像とPDFを ZIP バックアップします。
           </CardDescription>
         </CardHeader>
         <CardContent>
           <Button onClick={handleExport} className="gap-1">
             <Download className="h-4 w-4" />
-            JSONエクスポート
+            ZIPエクスポート
           </Button>
         </CardContent>
       </Card>
@@ -76,13 +76,13 @@ export default function BackupPage() {
             データインポート
           </CardTitle>
           <CardDescription>
-            JSONファイルからデータを復元します。既存データは上書きされます。
+            ZIP は画像と PDF も含めて復元します。JSON はデータベースのみ復元します。
           </CardDescription>
         </CardHeader>
         <CardContent>
           <Input
             type="file"
-            accept=".json"
+            accept=".zip,.json"
             onChange={handleImport}
             disabled={importing}
           />

@@ -4,7 +4,6 @@ import { formatCurrency, formatDate } from "@/lib/utils";
 import type {
   DocumentFormData,
   TaxBreakdown,
-  DocumentType,
 } from "@/types/document";
 import { DOCUMENT_TYPE_LABELS, calculateTotals, ACCOUNT_TYPE_LABELS, AccountType } from "@/types/document";
 
@@ -20,6 +19,8 @@ interface DocumentPreviewProps {
     invoiceRegistrationNo: string;
     logoPath: string;
     sealPath: string;
+    taxCalculation: string;
+    roundingMethod: string;
   };
   bankAccount?: {
     bankName: string;
@@ -36,10 +37,13 @@ export function DocumentPreview({ data, businessInfo, bankAccount }: DocumentPre
   const items = data.items || [];
   const { subtotal, taxAmount, totalAmount, taxBreakdown } = calculateTotals(
     items.filter((i) => i.productName),
-    "floor"
+    {
+      roundingMethod: (businessInfo?.roundingMethod || "floor") as "floor" | "ceil" | "round",
+      taxCalculation: (businessInfo?.taxCalculation || "exclusive") as "exclusive" | "inclusive",
+    }
   );
 
-  const totalDisplay = data.totalAmount || totalAmount;
+  const totalDisplay = data.totalAmount ?? totalAmount;
 
   const bankText = bankAccount
     ? `${bankAccount.bankName} ${bankAccount.branchName} ${ACCOUNT_TYPE_LABELS[bankAccount.accountType as AccountType] || bankAccount.accountType} ${bankAccount.accountNumber} ${bankAccount.accountHolder}`
@@ -226,9 +230,9 @@ export function DocumentPreview({ data, businessInfo, bankAccount }: DocumentPre
               {taxBreakdown.length > 0 ? taxBreakdown.map((tb: TaxBreakdown, idx: number) => (
                 <tr key={idx} className="border-b border-gray-200">
                   <td className="pr-3 py-0.5">{tb.label}</td>
-                  <td className="pr-3 py-0.5 text-right">{formatCurrency(tb.subtotal)}</td>
-                  <td className="pr-3 py-0.5 text-right">{formatCurrency(tb.taxAmount)}</td>
-                  <td className="py-0.5 text-right">{formatCurrency(tb.subtotal + tb.taxAmount)}</td>
+                    <td className="pr-3 py-0.5 text-right">{formatCurrency(tb.subtotal)}</td>
+                    <td className="pr-3 py-0.5 text-right">{formatCurrency(tb.taxAmount)}</td>
+                    <td className="py-0.5 text-right">{formatCurrency(tb.subtotal + tb.taxAmount)}</td>
                 </tr>
               )) : (
                 <tr className="border-b border-gray-200">
@@ -246,11 +250,11 @@ export function DocumentPreview({ data, businessInfo, bankAccount }: DocumentPre
         <div className="w-44">
           <div className="flex justify-between py-1 border-b border-gray-300">
             <span className="text-[10px] text-gray-600">小計</span>
-            <span className="text-[10px] font-medium">{formatCurrency(data.subtotal || subtotal)}</span>
+            <span className="text-[10px] font-medium">{formatCurrency(data.subtotal ?? subtotal)}</span>
           </div>
           <div className="flex justify-between py-1 border-b border-gray-300">
             <span className="text-[10px] text-gray-600">消費税額合計</span>
-            <span className="text-[10px] font-medium">{formatCurrency(data.taxAmount || taxAmount)}</span>
+            <span className="text-[10px] font-medium">{formatCurrency(data.taxAmount ?? taxAmount)}</span>
           </div>
           {data.withholdingTax && data.withholdingAmount && data.withholdingAmount > 0 && (
             <div className="flex justify-between py-1 border-b border-gray-300 text-red-600">

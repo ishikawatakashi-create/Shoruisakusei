@@ -7,7 +7,20 @@ export async function GET(
   { params }: { params: Promise<{ path: string[] }> }
 ) {
   const { path: segments } = await params;
-  const filePath = path.join(process.cwd(), "data", ...segments);
+  if (!segments.length || segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    return NextResponse.json({ error: "Invalid path" }, { status: 400 });
+  }
+
+  if (!["uploads", "pdfs"].includes(segments[0])) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  const dataRoot = path.resolve(process.cwd(), "data");
+  const filePath = path.resolve(dataRoot, ...segments);
+
+  if (!filePath.startsWith(`${dataRoot}${path.sep}`) && filePath !== dataRoot) {
+    return NextResponse.json({ error: "Invalid path" }, { status: 400 });
+  }
 
   try {
     const buffer = await readFile(filePath);

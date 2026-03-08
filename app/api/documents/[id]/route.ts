@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toErrorResponse } from "@/lib/api-errors";
 import { documentRepository } from "@/repositories/document";
 import { documentService } from "@/services/document";
 import { documentFormSchema } from "@/lib/validations";
@@ -11,14 +12,18 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 }
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
-  const body = await request.json();
-  const parsed = documentFormSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+  try {
+    const { id } = await params;
+    const body = await request.json();
+    const parsed = documentFormSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    }
+    const doc = await documentService.update(id, parsed.data);
+    return NextResponse.json(doc);
+  } catch (error) {
+    return toErrorResponse(error);
   }
-  const doc = await documentService.update(id, parsed.data);
-  return NextResponse.json(doc);
 }
 
 export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {

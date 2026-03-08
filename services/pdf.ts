@@ -1,8 +1,45 @@
 import path from "path";
-import { mkdir, writeFile } from "fs/promises";
+import { mkdir } from "fs/promises";
+import type { Browser } from "puppeteer";
+import { NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
-import { DOCUMENT_TYPE_LABELS } from "@/types/document";
-import type { DocumentType } from "@/types/document";
+import {
+  DOCUMENT_TYPE_LABELS,
+  calculateTotals,
+  type DocumentType,
+  type DocumentItemFormData,
+  type RoundingMethod,
+  type TaxCalculation,
+  type TaxCategory,
+} from "@/types/document";
+
+const globalForPdfBrowser = globalThis as typeof globalThis & {
+  pdfBrowserPromise?: Promise<Browser>;
+};
+
+async function getPdfBrowser() {
+  if (!globalForPdfBrowser.pdfBrowserPromise) {
+    globalForPdfBrowser.pdfBrowserPromise = import("puppeteer")
+      .then(({ default: puppeteer }) =>
+        puppeteer.launch({
+          headless: true,
+          args: ["--no-sandbox", "--disable-setuid-sandbox"],
+        })
+      )
+      .then((browser) => {
+        browser.on("disconnected", () => {
+          globalForPdfBrowser.pdfBrowserPromise = undefined;
+        });
+        return browser;
+      })
+      .catch((error) => {
+        globalForPdfBrowser.pdfBrowserPromise = undefined;
+        throw error;
+      });
+  }
+
+  return globalForPdfBrowser.pdfBrowserPromise;
+}
 
 export async function generatePdf(documentId: string): Promise<string> {
   const doc = await prisma.document.findUnique({
@@ -10,7 +47,7 @@ export async function generatePdf(documentId: string): Promise<string> {
     include: { items: { orderBy: { sortOrder: "asc" } } },
   });
 
-  if (!doc) throw new Error("Document not found");
+  if (!doc) throw new NotFoundError("Document not found");
 
   const businessInfo = await prisma.businessInfo.findUnique({
     where: { id: "default" },
@@ -23,15 +60,10 @@ export async function generatePdf(documentId: string): Promise<string> {
   const filePath = path.join(pdfDir, filename);
 
   const html = buildPdfHtml(doc, businessInfo);
-
-  const puppeteer = await import("puppeteer");
-  const browser = await puppeteer.default.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
+  const browser = await getPdfBrowser();
+  const page = await browser.newPage();
 
   try {
-    const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
     await page.pdf({
       path: filePath,
@@ -40,7 +72,7 @@ export async function generatePdf(documentId: string): Promise<string> {
       margin: { top: "10mm", right: "10mm", bottom: "10mm", left: "10mm" },
     });
   } finally {
-    await browser.close();
+    await page.close();
   }
 
   await prisma.document.update({
@@ -64,6 +96,7 @@ function formatDate(d: Date): string {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
+    timeZone: "UTC",
   }).format(d);
 }
 
@@ -71,37 +104,31 @@ function formatDate(d: Date): string {
 function buildPdfHtml(doc: any, businessInfo: any): string {
   const docType = doc.documentType as DocumentType;
   const title = DOCUMENT_TYPE_LABELS[docType];
-
-  const taxGroups: Record<string, { label: string; subtotal: number; rate: number }> = {};
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const item of doc.items as any[]) {
-    const key = item.taxCategory;
-    if (!taxGroups[key]) {
-      taxGroups[key] = {
-        label:
-          item.taxCategory === "taxable_10"
-            ? "課税10%"
-            : item.taxCategory === "taxable_8"
-              ? "課税8%"
-              : item.taxCategory === "exempt"
-                ? "非課税"
-                : "対象外",
-        subtotal: 0,
-        rate:
-          item.taxCategory === "taxable_10"
-            ? 10
-            : item.taxCategory === "taxable_8"
-              ? 8
-              : 0,
-      };
-    }
-    taxGroups[key].subtotal += item.amount;
-  }
+  const taxCalculation = (businessInfo?.taxCalculation || "exclusive") as TaxCalculation;
+  const roundingMethod = (businessInfo?.roundingMethod || "floor") as RoundingMethod;
+  const calculated = calculateTotals(
+    (doc.items as Array<Record<string, any>>).map(
+      (item) =>
+        ({
+          sortOrder: item.sortOrder,
+          date: item.date?.toISOString?.().slice(0, 10),
+          productName: item.productName,
+          description: item.description,
+          unitPrice: item.unitPrice,
+          quantity: item.quantity,
+          unit: item.unit,
+          taxRate: item.taxRate,
+          taxCategory: item.taxCategory as TaxCategory,
+          amount: item.amount,
+          memo: item.memo,
+        }) satisfies DocumentItemFormData
+    ),
+    { taxCalculation, roundingMethod }
+  );
 
   let taxBreakdownHtml = "";
-  for (const [, g] of Object.entries(taxGroups)) {
-    const tax = Math.floor((g.subtotal * g.rate) / 100);
-    taxBreakdownHtml += `<tr><td style="font-size:9px;color:#666;padding:2px 8px">${g.label}</td><td style="font-size:9px;text-align:right;padding:2px 8px">${formatCurrency(tax)}</td></tr>`;
+  for (const breakdown of calculated.taxBreakdown) {
+    taxBreakdownHtml += `<tr><td style="padding:4px 8px;border-bottom:1px solid #ddd">${breakdown.label}</td><td style="text-align:right;padding:4px 8px;border-bottom:1px solid #ddd">税抜 ${formatCurrency(breakdown.subtotal)} / 税 ${formatCurrency(breakdown.taxAmount)}</td></tr>`;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -171,9 +198,8 @@ function buildPdfHtml(doc: any, businessInfo: any): string {
 <head>
 <meta charset="utf-8">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&display=swap');
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family:'Noto Sans JP',sans-serif; font-size:11px; color:#333; line-height:1.6; }
+  body { font-family:'Hiragino Sans','Yu Gothic','Meiryo',sans-serif; font-size:11px; color:#333; line-height:1.6; }
   table { border-collapse:collapse; }
 </style>
 </head>

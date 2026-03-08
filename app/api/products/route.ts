@@ -4,7 +4,9 @@ import { productFormSchema } from "@/lib/validations";
 
 export async function GET(request: NextRequest) {
   const search = request.nextUrl.searchParams.get("search") || "";
-  const where: Record<string, unknown> = { isArchived: false };
+  const includeArchived = request.nextUrl.searchParams.get("includeArchived") === "true";
+  const where: Record<string, unknown> = {};
+  if (!includeArchived) where.isArchived = false;
   if (search) {
     where.OR = [
       { name: { contains: search } },

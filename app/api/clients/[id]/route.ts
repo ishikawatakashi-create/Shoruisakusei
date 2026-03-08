@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { clientFormSchema } from "@/lib/validations";
+import { z } from "zod";
+
+const archiveStateSchema = z.object({
+  isArchived: z.boolean(),
+});
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -24,4 +29,19 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
   const { id } = await params;
   await prisma.client.update({ where: { id }, data: { isArchived: true } });
   return NextResponse.json({ success: true });
+}
+
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const body = await request.json();
+  const parsed = archiveStateSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+  }
+
+  const client = await prisma.client.update({
+    where: { id },
+    data: { isArchived: parsed.data.isArchived },
+  });
+  return NextResponse.json(client);
 }

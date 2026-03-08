@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateDocumentNumber } from "@/services/numbering";
-import type { DocumentType } from "@/types/document";
+import { documentTypeSchema } from "@/lib/validations";
+import { previewDocumentNumber } from "@/services/numbering";
 
 export async function GET(request: NextRequest) {
-  const type = request.nextUrl.searchParams.get("type") as DocumentType;
-  if (!type) {
+  const parsed = documentTypeSchema.safeParse(request.nextUrl.searchParams.get("type"));
+  if (!parsed.success) {
     return NextResponse.json({ error: "type is required" }, { status: 400 });
   }
-  const number = await generateDocumentNumber(type);
+  const number = await previewDocumentNumber(parsed.data);
   return NextResponse.json({ number });
 }

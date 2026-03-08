@@ -1,194 +1,406 @@
+import type { Prisma } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
+import { BadRequestError, ConflictError, NotFoundError } from "@/lib/errors";
+import { fromStoredDate, toStoredDate, todayDateOnly } from "@/lib/utils";
 import { documentRepository, type DocumentCreateInput } from "@/repositories/document";
-import { generateDocumentNumber } from "@/services/numbering";
-import type { DocumentType, DocumentFormData } from "@/types/document";
+import { isDocumentNumberUnique, reserveDocumentNumber } from "@/services/numbering";
+import type {
+  DocumentFormData,
+  DocumentType,
+  PaymentMethod,
+  RoundingMethod,
+  TaxCalculation,
+  TaxCategory,
+} from "@/types/document";
+import {
+  ACCOUNT_TYPE_LABELS,
+  calculateItemAmount,
+  calculateTotals,
+  calculateWithholdingTax,
+  CONVERSION_MAP,
+  TAX_RATE_MAP,
+} from "@/types/document";
 
-function formDataToCreateInput(data: DocumentFormData): DocumentCreateInput {
+type DocumentClient = Prisma.TransactionClient | typeof prisma;
+
+type DocumentWithItems = Prisma.DocumentGetPayload<{
+  include: { items: true };
+}>;
+
+interface BusinessDefaults {
+  defaultHonorific: string;
+  defaultNotes: string;
+  defaultPaymentTerms: string;
+  defaultBankAccountId?: string;
+  taxCalculation: TaxCalculation;
+  roundingMethod: RoundingMethod;
+}
+
+function normalizeTaxCalculation(value?: string): TaxCalculation {
+  return value === "inclusive" ? "inclusive" : "exclusive";
+}
+
+function normalizeRoundingMethod(value?: string): RoundingMethod {
+  if (value === "ceil" || value === "round") {
+    return value;
+  }
+  return "floor";
+}
+
+function formatBankAccountDisplay(account: {
+  bankName: string;
+  branchName: string;
+  accountType: string;
+  accountNumber: string;
+  accountHolder: string;
+  displayText: string;
+}) {
+  if (account.displayText) {
+    return account.displayText;
+  }
+
+  return [
+    account.bankName,
+    account.branchName,
+    ACCOUNT_TYPE_LABELS[account.accountType as keyof typeof ACCOUNT_TYPE_LABELS] ?? account.accountType,
+    account.accountNumber,
+    account.accountHolder,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+async function loadBusinessDefaults(client: DocumentClient): Promise<BusinessDefaults> {
+  const info = await client.businessInfo.findUnique({
+    where: { id: "default" },
+  });
+
   return {
-    documentType: data.documentType,
-    documentNumber: data.documentNumber,
-    status: data.status || "draft",
-    issueDate: new Date(data.issueDate),
-    validUntil: data.validUntil ? new Date(data.validUntil) : null,
-    deliveryDate: data.deliveryDate ? new Date(data.deliveryDate) : null,
-    deliveryPlace: data.deliveryPlace || undefined,
-    paymentDueDate: data.paymentDueDate ? new Date(data.paymentDueDate) : null,
-    bankAccountId: data.bankAccountId || undefined,
-    bankAccountText: data.bankAccountText || "",
-    withholdingTax: data.withholdingTax || false,
-    withholdingAmount: data.withholdingAmount || 0,
-    receiptDate: data.receiptDate ? new Date(data.receiptDate) : null,
-    addressee: data.addressee || undefined,
-    proviso: data.proviso || undefined,
-    paymentMethod: data.paymentMethod || undefined,
-    isReissue: data.isReissue || false,
-    showStampNotice: data.showStampNotice || false,
-    clientId: data.clientId || undefined,
-    clientDisplayName: data.clientDisplayName || "",
-    clientDepartment: data.clientDepartment || "",
-    clientContactName: data.clientContactName || "",
-    clientHonorific: data.clientHonorific || "御中",
-    clientAddress: data.clientAddress || "",
-    subject: data.subject || "",
-    notes: data.notes || "",
-    internalMemo: data.internalMemo || "",
-    tags: data.tags || "",
-    subtotal: data.subtotal || 0,
-    taxAmount: data.taxAmount || 0,
-    totalAmount: data.totalAmount || 0,
-    sourceDocumentId: data.sourceDocumentId || undefined,
-    relatedDocIds: data.relatedDocIds || "",
-    items: data.items.map((item) => ({
+    defaultHonorific: info?.defaultHonorific || "御中",
+    defaultNotes: info?.defaultNotes || "",
+    defaultPaymentTerms: info?.defaultPaymentTerms || "",
+    defaultBankAccountId: info?.defaultBankAccountId || undefined,
+    taxCalculation: normalizeTaxCalculation(info?.taxCalculation),
+    roundingMethod: normalizeRoundingMethod(info?.roundingMethod),
+  };
+}
+
+async function resolveBankAccountText(
+  client: DocumentClient,
+  bankAccountId?: string,
+  fallbackText?: string
+) {
+  if (!bankAccountId) {
+    return fallbackText || "";
+  }
+
+  const account = await client.bankAccount.findUnique({
+    where: { id: bankAccountId },
+  });
+
+  if (!account) {
+    return fallbackText || "";
+  }
+
+  return formatBankAccountDisplay(account);
+}
+
+async function normalizeFormData(
+  data: DocumentFormData,
+  client: DocumentClient
+): Promise<DocumentFormData> {
+  const businessDefaults = await loadBusinessDefaults(client);
+
+  const items = data.items
+    .filter((item) => item.productName.trim())
+    .map((item, index) => {
+      const taxRate = TAX_RATE_MAP[item.taxCategory];
+      return {
+        ...item,
+        sortOrder: index,
+        taxRate,
+        amount: calculateItemAmount(item.unitPrice, item.quantity),
+      };
+    });
+
+  const { subtotal, taxAmount, totalAmount } = calculateTotals(items, {
+    roundingMethod: businessDefaults.roundingMethod,
+    taxCalculation: businessDefaults.taxCalculation,
+  });
+
+  const bankAccountId =
+    data.documentType === "invoice"
+      ? data.bankAccountId || businessDefaults.defaultBankAccountId
+      : data.bankAccountId;
+
+  const bankAccountText = await resolveBankAccountText(
+    client,
+    bankAccountId,
+    data.bankAccountText
+  );
+
+  const withholdingAmount =
+    data.withholdingTax && data.documentType === "invoice"
+      ? calculateWithholdingTax(subtotal)
+      : 0;
+
+  return {
+    ...data,
+    documentNumber: data.documentNumber.trim(),
+    clientHonorific: data.clientHonorific || businessDefaults.defaultHonorific,
+    notes: data.notes || businessDefaults.defaultNotes,
+    bankAccountId,
+    bankAccountText,
+    items,
+    subtotal,
+    taxAmount,
+    totalAmount: totalAmount - withholdingAmount,
+    withholdingAmount,
+  };
+}
+
+async function buildCreateInput(
+  data: DocumentFormData,
+  client: DocumentClient,
+  options: {
+    existingId?: string;
+    existingNumber?: string;
+  } = {}
+): Promise<DocumentCreateInput> {
+  const normalized = await normalizeFormData(data, client);
+
+  let documentNumber = normalized.documentNumber;
+  if (!documentNumber && options.existingNumber) {
+    documentNumber = options.existingNumber;
+  }
+
+  if (!documentNumber) {
+    documentNumber = await reserveDocumentNumber(normalized.documentType, client);
+  }
+
+  const isUnique = await isDocumentNumberUnique(
+    normalized.documentType,
+    documentNumber,
+    options.existingId,
+    client
+  );
+  if (!isUnique) {
+    throw new ConflictError("書類番号が重複しています");
+  }
+
+  return {
+    documentType: normalized.documentType,
+    documentNumber,
+    status: normalized.status,
+    issueDate: toStoredDate(normalized.issueDate)!,
+    validUntil: toStoredDate(normalized.validUntil),
+    deliveryDate: toStoredDate(normalized.deliveryDate),
+    deliveryPlace: normalized.deliveryPlace || undefined,
+    paymentDueDate: toStoredDate(normalized.paymentDueDate),
+    bankAccountId: normalized.bankAccountId || undefined,
+    bankAccountText: normalized.bankAccountText || "",
+    withholdingTax: normalized.withholdingTax || false,
+    withholdingAmount: normalized.withholdingAmount || 0,
+    receiptDate: toStoredDate(normalized.receiptDate),
+    addressee: normalized.addressee || undefined,
+    proviso: normalized.proviso || undefined,
+    paymentMethod: normalized.paymentMethod || undefined,
+    isReissue: normalized.isReissue || false,
+    showStampNotice: normalized.showStampNotice || false,
+    clientId: normalized.clientId || undefined,
+    clientDisplayName: normalized.clientDisplayName,
+    clientDepartment: normalized.clientDepartment,
+    clientContactName: normalized.clientContactName,
+    clientHonorific: normalized.clientHonorific,
+    clientAddress: normalized.clientAddress,
+    subject: normalized.subject,
+    notes: normalized.notes,
+    internalMemo: normalized.internalMemo,
+    tags: normalized.tags,
+    subtotal: normalized.subtotal,
+    taxAmount: normalized.taxAmount,
+    totalAmount: normalized.totalAmount,
+    sourceDocumentId: normalized.sourceDocumentId || undefined,
+    relatedDocIds: normalized.relatedDocIds || "",
+    items: normalized.items.map((item) => ({
       sortOrder: item.sortOrder,
-      date: item.date ? new Date(item.date) : null,
+      date: toStoredDate(item.date),
       productName: item.productName,
-      description: item.description || "",
+      description: item.description,
       unitPrice: item.unitPrice,
       quantity: item.quantity,
-      unit: item.unit || "",
+      unit: item.unit,
       taxRate: item.taxRate,
       taxCategory: item.taxCategory,
       amount: item.amount,
-      memo: item.memo || "",
+      memo: item.memo,
     })),
+  };
+}
+
+export function documentToFormData(doc: DocumentWithItems): DocumentFormData {
+  return {
+    documentType: doc.documentType as DocumentType,
+    documentNumber: doc.documentNumber,
+    status: doc.status as DocumentFormData["status"],
+    issueDate: fromStoredDate(doc.issueDate) || todayDateOnly(),
+    validUntil: fromStoredDate(doc.validUntil),
+    deliveryDate: fromStoredDate(doc.deliveryDate),
+    deliveryPlace: doc.deliveryPlace || undefined,
+    paymentDueDate: fromStoredDate(doc.paymentDueDate),
+    bankAccountId: doc.bankAccountId || undefined,
+    bankAccountText: doc.bankAccountText,
+    withholdingTax: doc.withholdingTax,
+    withholdingAmount: doc.withholdingAmount,
+    receiptDate: fromStoredDate(doc.receiptDate),
+    addressee: doc.addressee || undefined,
+    proviso: doc.proviso || undefined,
+    paymentMethod: (doc.paymentMethod as PaymentMethod) || undefined,
+    isReissue: doc.isReissue,
+    showStampNotice: doc.showStampNotice,
+    clientId: doc.clientId || undefined,
+    clientDisplayName: doc.clientDisplayName,
+    clientDepartment: doc.clientDepartment,
+    clientContactName: doc.clientContactName,
+    clientHonorific: doc.clientHonorific,
+    clientAddress: doc.clientAddress,
+    subject: doc.subject,
+    notes: doc.notes,
+    internalMemo: doc.internalMemo,
+    tags: doc.tags,
+    items: doc.items.map((item) => ({
+      id: item.id,
+      sortOrder: item.sortOrder,
+      date: fromStoredDate(item.date),
+      productName: item.productName,
+      description: item.description,
+      unitPrice: item.unitPrice,
+      quantity: item.quantity,
+      unit: item.unit,
+      taxRate: item.taxRate,
+      taxCategory: item.taxCategory as TaxCategory,
+      amount: item.amount,
+      memo: item.memo,
+    })),
+    subtotal: doc.subtotal,
+    taxAmount: doc.taxAmount,
+    totalAmount: doc.totalAmount,
+    sourceDocumentId: doc.sourceDocumentId || undefined,
+    relatedDocIds: doc.relatedDocIds,
   };
 }
 
 export const documentService = {
   async create(data: DocumentFormData) {
-    if (!data.documentNumber) {
-      data.documentNumber = await generateDocumentNumber(data.documentType);
-    }
-    const input = formDataToCreateInput(data);
-    return documentRepository.create(input);
+    return prisma.$transaction(async (tx) => {
+      const input = await buildCreateInput(data, tx);
+      return documentRepository.create(input, tx);
+    });
   },
 
   async update(id: string, data: DocumentFormData) {
-    const input = formDataToCreateInput(data);
-    return documentRepository.update(id, input);
+    return prisma.$transaction(async (tx) => {
+      const existing = await tx.document.findUnique({
+        where: { id },
+      });
+      if (!existing) {
+        throw new NotFoundError("Document not found");
+      }
+
+      if (existing.documentType !== data.documentType) {
+        throw new BadRequestError("書類種別は変更できません");
+      }
+
+      const input = await buildCreateInput(data, tx, {
+        existingId: id,
+        existingNumber: existing.documentNumber,
+      });
+
+      return documentRepository.update(id, input, tx);
+    });
   },
 
   async duplicate(id: string) {
-    const original = await documentRepository.findById(id);
-    if (!original) throw new Error("Document not found");
+    return prisma.$transaction(async (tx) => {
+      const original = await tx.document.findUnique({
+        where: { id },
+        include: { items: { orderBy: { sortOrder: "asc" } } },
+      });
 
-    const newNumber = await generateDocumentNumber(original.documentType as DocumentType);
+      if (!original) {
+        throw new NotFoundError("Document not found");
+      }
 
-    const newDoc: DocumentFormData = {
-      documentType: original.documentType as DocumentType,
-      documentNumber: newNumber,
-      status: "draft",
-      issueDate: new Date().toISOString().split("T")[0],
-      validUntil: original.validUntil?.toISOString().split("T")[0],
-      deliveryDate: original.deliveryDate?.toISOString().split("T")[0],
-      deliveryPlace: original.deliveryPlace || undefined,
-      paymentDueDate: original.paymentDueDate?.toISOString().split("T")[0],
-      bankAccountId: original.bankAccountId || undefined,
-      bankAccountText: original.bankAccountText,
-      withholdingTax: original.withholdingTax,
-      withholdingAmount: original.withholdingAmount,
-      clientId: original.clientId || undefined,
-      clientDisplayName: original.clientDisplayName,
-      clientDepartment: original.clientDepartment,
-      clientContactName: original.clientContactName,
-      clientHonorific: original.clientHonorific,
-      clientAddress: original.clientAddress,
-      subject: original.subject,
-      notes: original.notes,
-      internalMemo: "",
-      tags: original.tags,
-      items: original.items.map((item: Record<string, any>) => ({
-        sortOrder: item.sortOrder,
-        date: item.date?.toISOString().split("T")[0],
-        productName: item.productName,
-        description: item.description,
-        unitPrice: item.unitPrice,
-        quantity: item.quantity,
-        unit: item.unit,
-        taxRate: item.taxRate,
-        taxCategory: item.taxCategory as DocumentFormData["items"][0]["taxCategory"],
-        amount: item.amount,
-        memo: item.memo,
-      })),
-      subtotal: original.subtotal,
-      taxAmount: original.taxAmount,
-      totalAmount: original.totalAmount,
-      sourceDocumentId: undefined,
-      relatedDocIds: "",
-    };
+      const duplicated = documentToFormData(original);
+      duplicated.documentNumber = "";
+      duplicated.status = "draft";
+      duplicated.issueDate = todayDateOnly();
+      duplicated.internalMemo = "";
+      duplicated.sourceDocumentId = undefined;
+      duplicated.relatedDocIds = "";
 
-    const input = formDataToCreateInput(newDoc);
-    return documentRepository.create(input);
+      const input = await buildCreateInput(duplicated, tx);
+      return documentRepository.create(input, tx);
+    });
   },
 
   async convert(id: string, targetType: DocumentType) {
-    const original = await documentRepository.findById(id);
-    if (!original) throw new Error("Document not found");
+    return prisma.$transaction(async (tx) => {
+      const original = await tx.document.findUnique({
+        where: { id },
+        include: { items: { orderBy: { sortOrder: "asc" } } },
+      });
 
-    const newNumber = await generateDocumentNumber(targetType);
-    const today = new Date().toISOString().split("T")[0];
+      if (!original) {
+        throw new NotFoundError("Document not found");
+      }
 
-    const newDoc: DocumentFormData = {
-      documentType: targetType,
-      documentNumber: newNumber,
-      status: "draft",
-      issueDate: today,
-      clientId: original.clientId || undefined,
-      clientDisplayName: original.clientDisplayName,
-      clientDepartment: original.clientDepartment,
-      clientContactName: original.clientContactName,
-      clientHonorific: original.clientHonorific,
-      clientAddress: original.clientAddress,
-      subject: original.subject,
-      notes: original.notes,
-      internalMemo: "",
-      tags: original.tags,
-      items: original.items.map((item: Record<string, any>) => ({
-        sortOrder: item.sortOrder,
-        date: item.date?.toISOString().split("T")[0],
-        productName: item.productName,
-        description: item.description,
-        unitPrice: item.unitPrice,
-        quantity: item.quantity,
-        unit: item.unit,
-        taxRate: item.taxRate,
-        taxCategory: item.taxCategory as DocumentFormData["items"][0]["taxCategory"],
-        amount: item.amount,
-        memo: item.memo,
-      })),
-      subtotal: original.subtotal,
-      taxAmount: original.taxAmount,
-      totalAmount: original.totalAmount,
-      sourceDocumentId: original.id,
-      relatedDocIds: original.id,
-    };
+      const sourceType = original.documentType as DocumentType;
+      if (!CONVERSION_MAP[sourceType]?.includes(targetType)) {
+        throw new BadRequestError("変換できない書類種別です");
+      }
 
-    if (targetType === "delivery_note") {
-      newDoc.deliveryDate = today;
-    } else if (targetType === "invoice") {
-      newDoc.paymentDueDate = undefined;
-      newDoc.bankAccountId = original.bankAccountId || undefined;
-      newDoc.bankAccountText = original.bankAccountText;
-    } else if (targetType === "receipt") {
-      newDoc.receiptDate = today;
-      newDoc.addressee = original.clientDisplayName;
-      newDoc.proviso = original.subject || "お品代として";
-      newDoc.paymentMethod = "transfer";
-    }
+      const today = todayDateOnly();
+      const converted = documentToFormData(original);
+      converted.documentType = targetType;
+      converted.documentNumber = "";
+      converted.status = "draft";
+      converted.issueDate = today;
+      converted.internalMemo = "";
+      converted.sourceDocumentId = original.id;
 
-    const input = formDataToCreateInput(newDoc);
-    const created = await documentRepository.create(input);
+      const inheritedRelatedIds = new Set(
+        [original.id, ...original.relatedDocIds.split(",")]
+          .map((value) => value.trim())
+          .filter(Boolean)
+      );
+      converted.relatedDocIds = Array.from(inheritedRelatedIds).join(",");
 
-    const existingRelated = original.relatedDocIds
-      ? original.relatedDocIds.split(",").filter(Boolean)
-      : [];
-    existingRelated.push(created.id);
-    await prisma.document.update({
-      where: { id: original.id },
-      data: { relatedDocIds: existingRelated.join(",") },
+      if (targetType === "delivery_note") {
+        converted.deliveryDate = today;
+      }
+
+      if (targetType === "invoice") {
+        converted.paymentDueDate = undefined;
+      }
+
+      if (targetType === "receipt") {
+        converted.receiptDate = today;
+        converted.addressee = original.clientDisplayName;
+        converted.proviso = original.subject || "お品代として";
+        converted.paymentMethod = "transfer";
+      }
+
+      const input = await buildCreateInput(converted, tx);
+      const created = await documentRepository.create(input, tx);
+
+      inheritedRelatedIds.add(created.id);
+      await tx.document.update({
+        where: { id: original.id },
+        data: { relatedDocIds: Array.from(inheritedRelatedIds).join(",") },
+      });
+
+      return created;
     });
-
-    return created;
   },
 };
-
-import { prisma } from "@/lib/prisma";

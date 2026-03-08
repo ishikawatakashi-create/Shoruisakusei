@@ -1,22 +1,36 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Pencil, Trash2, Search } from "lucide-react";
+import { Pencil, Plus, Search, Trash2 } from "lucide-react";
 
 interface Client {
   id: string;
@@ -33,6 +47,7 @@ interface Client {
   defaultSubject: string;
   defaultNotes: string;
   tags: string;
+  isArchived: boolean;
 }
 
 const emptyClient = {
@@ -54,6 +69,7 @@ const emptyClient = {
 export default function ClientsPage() {
   const [clients, setClients] = useState<Client[]>([]);
   const [search, setSearch] = useState("");
+  const [viewMode, setViewMode] = useState<"active" | "archived" | "all">("active");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyClient);
@@ -61,11 +77,15 @@ export default function ClientsPage() {
   const fetchClients = useCallback(async () => {
     const params = new URLSearchParams();
     if (search) params.set("search", search);
-    const res = await fetch(`/api/clients?${params}`);
-    setClients(await res.json());
-  }, [search]);
+    if (viewMode !== "active") params.set("includeArchived", "true");
 
-  useEffect(() => { fetchClients(); }, [fetchClients]);
+    const res = await fetch(`/api/clients?${params.toString()}`);
+    setClients(await res.json());
+  }, [search, viewMode]);
+
+  useEffect(() => {
+    void fetchClients();
+  }, [fetchClients]);
 
   const handleSave = async () => {
     const method = editingId ? "PUT" : "POST";
@@ -75,11 +95,13 @@ export default function ClientsPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(form),
     });
+
     if (!res.ok) {
       const err = await res.json();
       toast.error("保存失敗: " + JSON.stringify(err.error));
       return;
     }
+
     toast.success(editingId ? "更新しました" : "作成しました");
     setDialogOpen(false);
     setEditingId(null);
@@ -107,10 +129,32 @@ export default function ClientsPage() {
     setDialogOpen(true);
   };
 
-  const handleDelete = async (id: string) => {
+  const handleArchive = async (id: string) => {
     if (!confirm("この取引先をアーカイブしますか？")) return;
-    await fetch(`/api/clients/${id}`, { method: "DELETE" });
+
+    const res = await fetch(`/api/clients/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      toast.error("アーカイブに失敗しました");
+      return;
+    }
+
     toast.success("アーカイブしました");
+    fetchClients();
+  };
+
+  const handleRestore = async (id: string) => {
+    const res = await fetch(`/api/clients/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isArchived: false }),
+    });
+
+    if (!res.ok) {
+      toast.error("復元に失敗しました");
+      return;
+    }
+
+    toast.success("復元しました");
     fetchClients();
   };
 
@@ -120,25 +164,41 @@ export default function ClientsPage() {
     setDialogOpen(true);
   };
 
+  const visibleClients = clients.filter((client) => {
+    if (viewMode === "archived") return client.isArchived;
+    if (viewMode === "all") return true;
+    return !client.isArchived;
+  });
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2 rounded bg-white border border-[#e0e3e7] px-4 py-3 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+      <div className="flex items-center gap-2 rounded border border-[#e0e3e7] bg-white px-4 py-3 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
         <div className="relative flex-1 max-w-xs">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#b0b5ba]" />
           <Input
             placeholder="取引先名、担当者名で検索..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-8 h-[30px] text-[12px]"
+            className="h-[30px] pl-8 text-[12px]"
           />
         </div>
-        <Button onClick={openNew} size="sm" className="gap-1 ml-auto h-[30px]">
+        <Select value={viewMode} onValueChange={(value) => setViewMode(value as "active" | "archived" | "all")}>
+          <SelectTrigger className="h-[30px] w-[150px] text-[12px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="active">通常表示</SelectItem>
+            <SelectItem value="archived">アーカイブのみ</SelectItem>
+            <SelectItem value="all">すべて表示</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button onClick={openNew} size="sm" className="ml-auto h-[30px] gap-1">
           <Plus className="h-3.5 w-3.5" />
           取引先を追加
         </Button>
       </div>
 
-      <div className="rounded bg-white border border-[#e0e3e7] shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
+      <div className="overflow-hidden rounded border border-[#e0e3e7] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
         <Table>
           <TableHeader>
             <TableRow>
@@ -148,41 +208,57 @@ export default function ClientsPage() {
               <TableHead>電話番号</TableHead>
               <TableHead>メール</TableHead>
               <TableHead>タグ</TableHead>
-              <TableHead className="w-20"></TableHead>
+              <TableHead className="w-28">状態</TableHead>
+              <TableHead className="w-28"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {clients.length === 0 ? (
+            {visibleClients.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-12 text-[#8a8a8a]">
+                <TableCell colSpan={8} className="py-12 text-center text-[#8a8a8a]">
                   取引先がありません
                 </TableCell>
               </TableRow>
             ) : (
-              clients.map((c) => (
-                <TableRow key={c.id}>
-                  <TableCell className="font-medium">{c.name}</TableCell>
+              visibleClients.map((client) => (
+                <TableRow key={client.id} className={client.isArchived ? "opacity-70" : undefined}>
+                  <TableCell className="font-medium">{client.name}</TableCell>
                   <TableCell>
-                    <Badge variant="outline">
-                      {c.clientType === "corporate" ? "法人" : "個人"}
-                    </Badge>
+                    <Badge variant="outline">{client.clientType === "corporate" ? "法人" : "個人"}</Badge>
                   </TableCell>
-                  <TableCell>{c.contactPerson}</TableCell>
-                  <TableCell className="text-sm">{c.phone}</TableCell>
-                  <TableCell className="text-sm">{c.email}</TableCell>
+                  <TableCell>{client.contactPerson}</TableCell>
+                  <TableCell className="text-sm">{client.phone}</TableCell>
+                  <TableCell className="text-sm">{client.email}</TableCell>
                   <TableCell>
-                    {c.tags && c.tags.split(",").map((t) => (
-                      <Badge key={t} variant="secondary" className="mr-1 text-xs">{t.trim()}</Badge>
-                    ))}
+                    {client.tags &&
+                      client.tags.split(",").map((tag) => (
+                        <Badge key={tag} variant="secondary" className="mr-1 text-xs">
+                          {tag.trim()}
+                        </Badge>
+                      ))}
+                  </TableCell>
+                  <TableCell>
+                    {client.isArchived ? <Badge variant="secondary">アーカイブ</Badge> : <Badge variant="outline">通常</Badge>}
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-1">
-                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleEdit(c)}>
+                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleEdit(client)}>
                         <Pencil className="h-3.5 w-3.5" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-[#e74c3c]" onClick={() => handleDelete(c.id)}>
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
+                      {client.isArchived ? (
+                        <Button variant="ghost" size="sm" className="h-8 px-2 text-[12px]" onClick={() => handleRestore(client.id)}>
+                          復元
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-[#e74c3c]"
+                          onClick={() => handleArchive(client.id)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>
@@ -193,7 +269,7 @@ export default function ClientsPage() {
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+        <DialogContent className="max-h-[80vh] max-w-2xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingId ? "取引先を編集" : "取引先を追加"}</DialogTitle>
             <DialogDescription>取引先の情報を入力してください。</DialogDescription>
@@ -206,8 +282,10 @@ export default function ClientsPage() {
               </div>
               <div className="space-y-1.5">
                 <Label>区分</Label>
-                <Select value={form.clientType} onValueChange={(v) => setForm({ ...form, clientType: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                <Select value={form.clientType} onValueChange={(value) => setForm({ ...form, clientType: value })}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="corporate">法人</SelectItem>
                     <SelectItem value="individual">個人</SelectItem>
@@ -228,8 +306,10 @@ export default function ClientsPage() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <Label>敬称</Label>
-                <Select value={form.honorific} onValueChange={(v) => setForm({ ...form, honorific: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                <Select value={form.honorific} onValueChange={(value) => setForm({ ...form, honorific: value })}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="御中">御中</SelectItem>
                     <SelectItem value="様">様</SelectItem>
@@ -238,7 +318,11 @@ export default function ClientsPage() {
               </div>
               <div className="space-y-1.5">
                 <Label>郵便番号</Label>
-                <Input value={form.postalCode} onChange={(e) => setForm({ ...form, postalCode: e.target.value })} placeholder="000-0000" />
+                <Input
+                  value={form.postalCode}
+                  onChange={(e) => setForm({ ...form, postalCode: e.target.value })}
+                  placeholder="000-0000"
+                />
               </div>
             </div>
             <div className="space-y-1.5">
@@ -252,12 +336,20 @@ export default function ClientsPage() {
               </div>
               <div className="space-y-1.5">
                 <Label>メールアドレス</Label>
-                <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+                <Input
+                  type="email"
+                  value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                />
               </div>
             </div>
             <div className="space-y-1.5">
               <Label>支払条件</Label>
-              <Input value={form.paymentTerms} onChange={(e) => setForm({ ...form, paymentTerms: e.target.value })} placeholder="月末締め翌月末払い" />
+              <Input
+                value={form.paymentTerms}
+                onChange={(e) => setForm({ ...form, paymentTerms: e.target.value })}
+                placeholder="月末締め翌月末払い"
+              />
             </div>
             <div className="space-y-1.5">
               <Label>タグ（カンマ区切り）</Label>
@@ -265,11 +357,17 @@ export default function ClientsPage() {
             </div>
             <div className="space-y-1.5">
               <Label>デフォルト備考</Label>
-              <Textarea value={form.defaultNotes} onChange={(e) => setForm({ ...form, defaultNotes: e.target.value })} rows={2} />
+              <Textarea
+                value={form.defaultNotes}
+                onChange={(e) => setForm({ ...form, defaultNotes: e.target.value })}
+                rows={2}
+              />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>キャンセル</Button>
+            <Button variant="outline" onClick={() => setDialogOpen(false)}>
+              キャンセル
+            </Button>
             <Button onClick={handleSave}>{editingId ? "更新" : "作成"}</Button>
           </DialogFooter>
         </DialogContent>

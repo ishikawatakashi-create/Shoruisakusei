@@ -11,6 +11,13 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 
+interface BankAccount {
+  id: string;
+  displayText: string;
+  bankName: string;
+  branchName: string;
+}
+
 interface BusinessSettings {
   businessName: string;
   tradeName: string;
@@ -20,11 +27,14 @@ interface BusinessSettings {
   phone: string;
   email: string;
   invoiceRegistrationNo: string;
+  logoPath: string;
+  sealPath: string;
   defaultHonorific: string;
   defaultNotes: string;
   taxCalculation: string;
   roundingMethod: string;
   defaultPaymentTerms: string;
+  defaultBankAccountId?: string;
 }
 
 const emptySettings: BusinessSettings = {
@@ -36,22 +46,30 @@ const emptySettings: BusinessSettings = {
   phone: "",
   email: "",
   invoiceRegistrationNo: "",
+  logoPath: "",
+  sealPath: "",
   defaultHonorific: "御中",
   defaultNotes: "",
   taxCalculation: "exclusive",
   roundingMethod: "floor",
   defaultPaymentTerms: "",
+  defaultBankAccountId: undefined,
 };
 
 export default function BusinessSettingsPage() {
   const [form, setForm] = useState<BusinessSettings>(emptySettings);
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState<"logo" | "seal" | null>(null);
 
   useEffect(() => {
-    fetch("/api/settings/business")
-      .then((res) => res.json())
-      .then((data) => {
+    Promise.all([
+      fetch("/api/settings/business").then((res) => res.json()),
+      fetch("/api/bank-accounts").then((res) => res.json()),
+    ])
+      .then(([data, accounts]) => {
+        setBankAccounts(accounts);
         setForm({
           businessName: data.businessName ?? "",
           tradeName: data.tradeName ?? "",
@@ -61,16 +79,49 @@ export default function BusinessSettingsPage() {
           phone: data.phone ?? "",
           email: data.email ?? "",
           invoiceRegistrationNo: data.invoiceRegistrationNo ?? "",
+          logoPath: data.logoPath ?? "",
+          sealPath: data.sealPath ?? "",
           defaultHonorific: data.defaultHonorific ?? "御中",
           defaultNotes: data.defaultNotes ?? "",
           taxCalculation: data.taxCalculation ?? "exclusive",
           roundingMethod: data.roundingMethod ?? "floor",
           defaultPaymentTerms: data.defaultPaymentTerms ?? "",
+          defaultBankAccountId: data.defaultBankAccountId ?? undefined,
         });
       })
       .catch(() => toast.error("設定の読み込みに失敗しました"))
       .finally(() => setLoading(false));
   }, []);
+
+  const handleUpload = async (type: "logo" | "seal", file?: File) => {
+    if (!file) return;
+    setUploading(type);
+    try {
+      const body = new FormData();
+      body.append("type", type);
+      body.append("file", file);
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        body,
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        toast.error(error.error || "アップロードに失敗しました");
+        return;
+      }
+      const data = await res.json();
+      setForm((prev) => ({
+        ...prev,
+        logoPath: type === "logo" ? data.path : prev.logoPath,
+        sealPath: type === "seal" ? data.path : prev.sealPath,
+      }));
+      toast.success(type === "logo" ? "ロゴをアップロードしました" : "印影をアップロードしました");
+    } catch {
+      toast.error("アップロードに失敗しました");
+    } finally {
+      setUploading(null);
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -141,6 +192,18 @@ export default function BusinessSettingsPage() {
             <Label>適格請求書発行事業者登録番号</Label>
             <Input value={form.invoiceRegistrationNo} onChange={(e) => setForm({ ...form, invoiceRegistrationNo: e.target.value })} placeholder="T1234567890123" />
           </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label>ロゴ画像</Label>
+              <Input type="file" accept=".png,.jpg,.jpeg,.webp,.svg" onChange={(e) => handleUpload("logo", e.target.files?.[0])} disabled={uploading === "logo"} />
+              {form.logoPath && <img src={form.logoPath} alt="ロゴ" className="h-12 object-contain border rounded p-2" />}
+            </div>
+            <div className="space-y-1.5">
+              <Label>印影画像</Label>
+              <Input type="file" accept=".png,.jpg,.jpeg,.webp,.svg" onChange={(e) => handleUpload("seal", e.target.files?.[0])} disabled={uploading === "seal"} />
+              {form.sealPath && <img src={form.sealPath} alt="印影" className="h-16 object-contain border rounded p-2" />}
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -167,6 +230,25 @@ export default function BusinessSettingsPage() {
           <div className="space-y-1.5">
             <Label>デフォルト支払条件</Label>
             <Input value={form.defaultPaymentTerms} onChange={(e) => setForm({ ...form, defaultPaymentTerms: e.target.value })} placeholder="月末締め翌月末払い" />
+          </div>
+          <div className="space-y-1.5">
+            <Label>既定の振込先</Label>
+            <Select
+              value={form.defaultBankAccountId || "__none__"}
+              onValueChange={(value) =>
+                setForm({ ...form, defaultBankAccountId: value === "__none__" ? undefined : value })
+              }
+            >
+              <SelectTrigger><SelectValue placeholder="選択しない" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">未設定</SelectItem>
+                {bankAccounts.map((account) => (
+                  <SelectItem key={account.id} value={account.id}>
+                    {account.displayText || `${account.bankName} ${account.branchName}`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </CardContent>
       </Card>

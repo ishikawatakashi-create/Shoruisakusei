@@ -14,7 +14,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { DocumentItemsEditor } from "./document-items-editor";
 import { DocumentPreview } from "./document-preview";
@@ -22,9 +21,13 @@ import type {
   DocumentFormData,
   DocumentItemFormData,
   DocumentType,
+  RoundingMethod,
+  TaxCalculation,
   TaxCategory,
 } from "@/types/document";
 import {
+  ACCOUNT_TYPE_LABELS,
+  AccountType,
   DOCUMENT_TYPE_LABELS,
   DOCUMENT_STATUS_LABELS,
   PAYMENT_METHOD_LABELS,
@@ -32,7 +35,7 @@ import {
   calculateWithholdingTax,
   CONVERSION_MAP,
 } from "@/types/document";
-import { formatDateInput } from "@/lib/utils";
+import { todayDateOnly } from "@/lib/utils";
 import {
   Save,
   FileDown,
@@ -49,6 +52,10 @@ interface Client {
   honorific: string;
   postalCode: string;
   address: string;
+  paymentTerms: string;
+  defaultSubject: string;
+  defaultNotes: string;
+  bankAccountId?: string;
 }
 
 interface Product {
@@ -82,10 +89,15 @@ interface BusinessInfo {
   invoiceRegistrationNo: string;
   logoPath: string;
   sealPath: string;
+  defaultHonorific: string;
   defaultNotes: string;
   defaultPaymentTerms: string;
+  defaultBankAccountId?: string;
+  taxCalculation: string;
   roundingMethod: string;
 }
+
+type AutoSaveState = "idle" | "pending" | "saving" | "saved" | "error";
 
 interface DocumentFormProps {
   documentType: DocumentType;
@@ -99,11 +111,11 @@ function getDefaultFormData(type: DocumentType): DocumentFormData {
     documentType: type,
     documentNumber: "",
     status: "draft",
-    issueDate: formatDateInput(new Date()),
+    issueDate: todayDateOnly(),
     clientDisplayName: "",
     clientDepartment: "",
     clientContactName: "",
-    clientHonorific: "御中",
+    clientHonorific: "",
     clientAddress: "",
     subject: "",
     notes: "",
@@ -129,6 +141,55 @@ function getDefaultFormData(type: DocumentType): DocumentFormData {
   };
 }
 
+function getBankAccountLabel(account: BankAccount | null | undefined) {
+  if (!account) {
+    return "";
+  }
+
+  if (account.displayText) {
+    return account.displayText;
+  }
+
+  return [
+    account.bankName,
+    account.branchName,
+    ACCOUNT_TYPE_LABELS[account.accountType as AccountType] || account.accountType,
+    account.accountNumber,
+    account.accountHolder,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function joinNoteLines(...parts: Array<string | undefined>) {
+  return Array.from(
+    new Set(parts.map((part) => part?.trim()).filter((part): part is string => Boolean(part)))
+  ).join("\n");
+}
+
+function getCalculationOptions(businessInfo: BusinessInfo | null) {
+  return {
+    roundingMethod: (businessInfo?.roundingMethod || "floor") as RoundingMethod,
+    taxCalculation: (businessInfo?.taxCalculation || "exclusive") as TaxCalculation,
+  };
+}
+
+function getAutoSaveLabel(state: AutoSaveState, lastSaved: string) {
+  if (state === "saving") {
+    return "自動保存中...";
+  }
+  if (state === "pending") {
+    return "変更あり";
+  }
+  if (state === "error") {
+    return "自動保存に失敗";
+  }
+  if (state === "saved" && lastSaved) {
+    return `自動保存: ${lastSaved}`;
+  }
+  return "";
+}
+
 export function DocumentForm({
   documentType,
   documentId,
@@ -146,7 +207,9 @@ export function DocumentForm({
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [businessInfo, setBusinessInfo] = useState<BusinessInfo | null>(null);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoSaveInitialized = useRef(false);
   const [lastSaved, setLastSaved] = useState<string>("");
+  const [autoSaveState, setAutoSaveState] = useState<AutoSaveState>("idle");
 
   useEffect(() => {
     Promise.all([
@@ -161,25 +224,29 @@ export function DocumentForm({
       setBusinessInfo(bi);
 
       if (mode === "create" && !initialData) {
-        fetch(`/api/documents/number?type=${documentType}`)
-          .then((r) => r.json())
-          .then((data) => {
-            setFormData((prev) => ({
-              ...prev,
-              documentNumber: data.number,
-              notes: bi.defaultNotes || "",
-            }));
-          });
+        const defaultBankAccount = b.find((account: BankAccount) => account.id === bi.defaultBankAccountId);
+        setFormData((prev) => ({
+          ...prev,
+          clientHonorific: bi.defaultHonorific || prev.clientHonorific || "御中",
+          notes: prev.notes || bi.defaultNotes || "",
+          bankAccountId:
+            documentType === "invoice"
+              ? prev.bankAccountId || bi.defaultBankAccountId || undefined
+              : prev.bankAccountId,
+          bankAccountText:
+            documentType === "invoice"
+              ? prev.bankAccountText || getBankAccountLabel(defaultBankAccount)
+              : prev.bankAccountText,
+        }));
       }
     });
   }, [documentType, mode, initialData]);
 
   const recalculate = useCallback(
     (items: DocumentItemFormData[]) => {
-      const roundingMethod = (businessInfo?.roundingMethod || "floor") as "floor" | "ceil" | "round";
       const { subtotal, taxAmount, totalAmount } = calculateTotals(
         items.filter((i) => i.productName),
-        roundingMethod
+        getCalculationOptions(businessInfo)
       );
 
       let finalTotal = totalAmount;
@@ -207,9 +274,9 @@ export function DocumentForm({
         const next = { ...prev, [field]: value };
 
         if (field === "withholdingTax") {
-          const { subtotal, taxAmount, totalAmount } = calculateTotals(
+          const { subtotal, totalAmount } = calculateTotals(
             prev.items.filter((i) => i.productName),
-            "floor"
+            getCalculationOptions(businessInfo)
           );
           if (value) {
             next.withholdingAmount = calculateWithholdingTax(subtotal);
@@ -223,26 +290,47 @@ export function DocumentForm({
         return next;
       });
     },
-    []
+    [businessInfo]
   );
 
   const selectClient = useCallback(
     (clientId: string) => {
       const client = clients.find((c) => c.id === clientId);
       if (!client) return;
+      const selectedBankAccountId =
+        documentType === "invoice"
+          ? client.bankAccountId || businessInfo?.defaultBankAccountId || undefined
+          : undefined;
+      const selectedBankAccount = bankAccounts.find((account) => account.id === selectedBankAccountId);
+      const notes = joinNoteLines(
+        client.defaultNotes,
+        documentType === "invoice"
+          ? client.paymentTerms || businessInfo?.defaultPaymentTerms
+          : undefined,
+        businessInfo?.defaultNotes
+      );
+
       setFormData((prev) => ({
         ...prev,
         clientId,
         clientDisplayName: client.name,
         clientDepartment: client.department,
         clientContactName: client.contactPerson,
-        clientHonorific: client.honorific,
+        clientHonorific: client.honorific || businessInfo?.defaultHonorific || prev.clientHonorific || "御中",
         clientAddress: client.address
           ? `〒${client.postalCode} ${client.address}`
           : "",
+        subject: prev.subject || client.defaultSubject || "",
+        notes: prev.notes || notes,
+        bankAccountId:
+          documentType === "invoice" ? selectedBankAccountId || prev.bankAccountId : prev.bankAccountId,
+        bankAccountText:
+          documentType === "invoice"
+            ? getBankAccountLabel(selectedBankAccount) || prev.bankAccountText
+            : prev.bankAccountText,
       }));
     },
-    [clients]
+    [bankAccounts, businessInfo, clients, documentType]
   );
 
   const selectBankAccount = useCallback(
@@ -252,7 +340,7 @@ export function DocumentForm({
       setFormData((prev) => ({
         ...prev,
         bankAccountId: accountId,
-        bankAccountText: account.displayText,
+        bankAccountText: getBankAccountLabel(account),
       }));
     },
     [bankAccounts]
@@ -261,17 +349,27 @@ export function DocumentForm({
   // Auto-save (only in edit mode)
   useEffect(() => {
     if (mode !== "edit" || !documentId) return;
+    if (!autoSaveInitialized.current) {
+      autoSaveInitialized.current = true;
+      return;
+    }
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    setAutoSaveState("pending");
     autoSaveTimer.current = setTimeout(async () => {
       try {
-        await fetch(`/api/documents/${documentId}`, {
+        setAutoSaveState("saving");
+        const res = await fetch(`/api/documents/${documentId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(formData),
         });
+        if (!res.ok) {
+          throw new Error("autosave_failed");
+        }
         setLastSaved(new Date().toLocaleTimeString("ja-JP"));
+        setAutoSaveState("saved");
       } catch {
-        // silent fail for auto-save
+        setAutoSaveState("error");
       }
     }, 3000);
 
@@ -316,9 +414,11 @@ export function DocumentForm({
         }
         toast.success("保存しました");
         setLastSaved(new Date().toLocaleTimeString("ja-JP"));
+        setAutoSaveState("saved");
       }
     } catch (e) {
       toast.error("エラーが発生しました");
+      setAutoSaveState("error");
     } finally {
       setSaving(false);
     }
@@ -354,6 +454,9 @@ export function DocumentForm({
       const res = await fetch(`/api/documents/${documentId}/duplicate`, {
         method: "POST",
       });
+      if (!res.ok) {
+        throw new Error("duplicate_failed");
+      }
       const doc = await res.json();
       const paths: Record<string, string> = {
         estimate: "/estimates",
@@ -376,6 +479,9 @@ export function DocumentForm({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ targetType }),
       });
+      if (!res.ok) {
+        throw new Error("convert_failed");
+      }
       const doc = await res.json();
       const paths: Record<string, string> = {
         estimate: "/estimates",
@@ -435,9 +541,9 @@ export function DocumentForm({
                 {DOCUMENT_TYPE_LABELS[target]}へ変換
               </Button>
             ))}
-          {lastSaved && (
+          {getAutoSaveLabel(autoSaveState, lastSaved) && (
             <span className="text-[11px] text-[#8a8a8a] ml-auto">
-              自動保存: {lastSaved}
+              {getAutoSaveLabel(autoSaveState, lastSaved)}
             </span>
           )}
         </div>
@@ -447,10 +553,11 @@ export function DocumentForm({
           <h3 className="text-[13px] font-bold text-[#333] mb-2">基本情報</h3>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <Label>書類番号 <span className="text-[#e74c3c]">*</span></Label>
+              <Label>書類番号</Label>
               <Input
                 value={formData.documentNumber}
                 onChange={(e) => updateField("documentNumber", e.target.value)}
+                placeholder={mode === "create" ? "未入力なら保存時に自動採番" : ""}
               />
             </div>
             <div className="space-y-1">
