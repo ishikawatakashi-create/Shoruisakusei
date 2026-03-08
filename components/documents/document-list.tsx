@@ -312,9 +312,10 @@ function DocumentListContent({ documentType, basePath }: DocumentListProps) {
       toast.error("PDF生成に失敗しました");
       return;
     }
-
-    const data = await res.json();
-    window.open(data.url, "_blank");
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
     toast.success("PDFを生成しました");
   };
 

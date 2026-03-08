@@ -1,5 +1,5 @@
 import path from "path";
-import { mkdir } from "fs/promises";
+import { mkdir, writeFile } from "fs/promises";
 import type { Browser } from "puppeteer";
 import { NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
@@ -13,35 +13,60 @@ import {
   type TaxCategory,
 } from "@/types/document";
 
+const isServerless = process.env.VERCEL === "1";
+
 const globalForPdfBrowser = globalThis as typeof globalThis & {
   pdfBrowserPromise?: Promise<Browser>;
 };
 
-async function getPdfBrowser() {
+async function getPdfBrowser(): Promise<Browser> {
   if (!globalForPdfBrowser.pdfBrowserPromise) {
-    globalForPdfBrowser.pdfBrowserPromise = import("puppeteer")
-      .then(({ default: puppeteer }) =>
-        puppeteer.launch({
-          headless: true,
-          args: ["--no-sandbox", "--disable-setuid-sandbox"],
-        })
-      )
-      .then((browser) => {
+    if (isServerless) {
+      globalForPdfBrowser.pdfBrowserPromise = (async () => {
+        const puppeteer = (await import("puppeteer-core")).default;
+        const chromium = await import("@sparticuz/chromium");
+        return puppeteer.launch({
+          args: chromium.default.args,
+          defaultViewport: chromium.default.defaultViewport,
+          executablePath: await chromium.default.executablePath(),
+          headless: chromium.default.headless,
+        });
+      })().then((browser) => {
         browser.on("disconnected", () => {
           globalForPdfBrowser.pdfBrowserPromise = undefined;
         });
         return browser;
-      })
-      .catch((error) => {
+      }).catch((error) => {
         globalForPdfBrowser.pdfBrowserPromise = undefined;
         throw error;
       });
+    } else {
+      globalForPdfBrowser.pdfBrowserPromise = import("puppeteer")
+        .then(({ default: puppeteer }) =>
+          puppeteer.launch({
+            headless: true,
+            args: ["--no-sandbox", "--disable-setuid-sandbox"],
+          })
+        )
+        .then((browser) => {
+          browser.on("disconnected", () => {
+            globalForPdfBrowser.pdfBrowserPromise = undefined;
+          });
+          return browser;
+        })
+        .catch((error) => {
+          globalForPdfBrowser.pdfBrowserPromise = undefined;
+          throw error;
+        });
+    }
   }
 
   return globalForPdfBrowser.pdfBrowserPromise;
 }
 
-export async function generatePdf(documentId: string): Promise<string> {
+export type GeneratePdfResult = { buffer: Buffer; filename: string };
+
+export async function generatePdf(documentId: string): Promise<GeneratePdfResult> {
   const doc = await prisma.document.findUnique({
     where: { id: documentId },
     include: { items: { orderBy: { sortOrder: "asc" } } },
@@ -53,34 +78,37 @@ export async function generatePdf(documentId: string): Promise<string> {
     where: { id: "default" },
   });
 
-  const pdfDir = path.join(process.cwd(), "data", "pdfs");
-  await mkdir(pdfDir, { recursive: true });
-
   const filename = `${doc.documentNumber.replace(/[/\\:]/g, "-")}_${Date.now()}.pdf`;
-  const filePath = path.join(pdfDir, filename);
 
   const html = buildPdfHtml(doc, businessInfo);
   const browser = await getPdfBrowser();
   const page = await browser.newPage();
 
+  let buffer: Buffer;
   try {
     await page.setContent(html, { waitUntil: "networkidle0" });
-    await page.pdf({
-      path: filePath,
-      format: "A4",
+    const pdfOptions = {
+      format: "A4" as const,
       printBackground: true,
       margin: { top: "10mm", right: "10mm", bottom: "10mm", left: "10mm" },
-    });
+    };
+    buffer = (await page.pdf(pdfOptions)) as Buffer;
   } finally {
     await page.close();
   }
 
-  await prisma.document.update({
-    where: { id: documentId },
-    data: { pdfPath: `/data/pdfs/${filename}` },
-  });
+  if (!isServerless) {
+    const pdfDir = path.join(process.cwd(), "data", "pdfs");
+    await mkdir(pdfDir, { recursive: true });
+    const filePath = path.join(pdfDir, filename);
+    await writeFile(filePath, buffer);
+    await prisma.document.update({
+      where: { id: documentId },
+      data: { pdfPath: `/data/pdfs/${filename}` },
+    });
+  }
 
-  return `/data/pdfs/${filename}`;
+  return { buffer, filename };
 }
 
 function formatCurrency(n: number): string {

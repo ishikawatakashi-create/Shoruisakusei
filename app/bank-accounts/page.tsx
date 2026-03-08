@@ -50,6 +50,7 @@ export default function BankAccountsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyAccount);
+  const [saving, setSaving] = useState(false);
 
   const fetchAccounts = useCallback(async () => {
     const res = await fetch("/api/bank-accounts");
@@ -59,23 +60,34 @@ export default function BankAccountsPage() {
   useEffect(() => { fetchAccounts(); }, [fetchAccounts]);
 
   const handleSave = async () => {
-    const method = editingId ? "PUT" : "POST";
-    const url = editingId ? `/api/bank-accounts/${editingId}` : "/api/bank-accounts";
-    const res = await fetch(url, {
-      method,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      toast.error("保存失敗: " + JSON.stringify(err.error));
+    const bankName = form.bankName?.trim() ?? "";
+    if (!bankName) {
+      toast.error("銀行名を入力してください");
       return;
     }
-    toast.success(editingId ? "更新しました" : "作成しました");
-    setDialogOpen(false);
-    setEditingId(null);
-    setForm(emptyAccount);
-    fetchAccounts();
+    setSaving(true);
+    try {
+      const method = editingId ? "PUT" : "POST";
+      const url = editingId ? `/api/bank-accounts/${editingId}` : "/api/bank-accounts";
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data?.error?.formErrors?.[0] ?? data?.error?.fieldErrors?.bankName?.[0] ?? data?.message ?? "保存に失敗しました";
+        toast.error(typeof msg === "string" ? msg : "保存に失敗しました");
+        return;
+      }
+      toast.success(editingId ? "更新しました" : "作成しました");
+      setDialogOpen(false);
+      setEditingId(null);
+      setForm(emptyAccount);
+      fetchAccounts();
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleEdit = (account: BankAccount) => {
@@ -212,8 +224,10 @@ export default function BankAccountsPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>キャンセル</Button>
-            <Button onClick={handleSave}>{editingId ? "更新" : "作成"}</Button>
+            <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>キャンセル</Button>
+            <Button type="button" onClick={handleSave} disabled={saving}>
+              {saving ? "保存中…" : editingId ? "更新" : "作成"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
