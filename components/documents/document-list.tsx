@@ -207,7 +207,14 @@ function DocumentListContent({ documentType, basePath }: DocumentListProps) {
         });
 
         if (!res.ok) {
-          throw new Error("書類一覧の取得に失敗しました");
+          const errBody = await res.json().catch(() => ({}));
+          const msg =
+            typeof errBody?.message === "string"
+              ? errBody.message
+              : typeof errBody?.error === "string"
+                ? errBody.error
+                : errBody?.error?.formErrors?.[0] ?? "書類一覧の取得に失敗しました";
+          throw new Error(msg);
         }
 
         const data = await res.json();
@@ -226,7 +233,8 @@ function DocumentListContent({ documentType, basePath }: DocumentListProps) {
           return;
         }
         console.error(error);
-        toast.error("一覧の取得に失敗しました");
+        const message = error instanceof Error ? error.message : "一覧の取得に失敗しました";
+        toast.error(message);
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);

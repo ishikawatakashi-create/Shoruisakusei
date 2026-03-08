@@ -105,13 +105,30 @@ export const documentListQuerySchema = z.object({
   type: documentTypeSchema,
   search: z.string().optional(),
   status: documentStatusSchema.optional(),
-  dateFrom: dateOnlySchema.optional(),
-  dateTo: dateOnlySchema.optional(),
+  dateFrom: z
+    .union([dateOnlySchema, z.literal("")])
+    .optional()
+    .transform((v) => (v === "" ? undefined : v)),
+  dateTo: z
+    .union([dateOnlySchema, z.literal("")])
+    .optional()
+    .transform((v) => (v === "" ? undefined : v)),
   clientId: z.string().optional(),
   sortBy: documentSortFieldSchema.default("updatedAt"),
   sortOrder: sortOrderSchema.default("desc"),
-  page: z.coerce.number().int().positive().default(1),
-  perPage: z.coerce.number().int().positive().max(100).default(50),
+  page: z.coerce
+    .number()
+    .int()
+    .positive()
+    .catch(1)
+    .default(1),
+  perPage: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(100)
+    .catch(50)
+    .default(50),
 });
 
 export const clientFormSchema = z.object({

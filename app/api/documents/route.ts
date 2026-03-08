@@ -5,8 +5,9 @@ import { documentService } from "@/services/document";
 import { documentFormSchema, documentListQuerySchema } from "@/lib/validations";
 
 export async function GET(request: NextRequest) {
+  const rawType = request.nextUrl.searchParams.get("type");
   const parsed = documentListQuerySchema.safeParse({
-    type: request.nextUrl.searchParams.get("type") || undefined,
+    type: rawType || undefined,
     search: request.nextUrl.searchParams.get("search") || undefined,
     status: request.nextUrl.searchParams.get("status") || undefined,
     dateFrom: request.nextUrl.searchParams.get("dateFrom") || undefined,
@@ -19,22 +20,32 @@ export async function GET(request: NextRequest) {
   });
 
   if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    const first = parsed.error.errors[0];
+    const message = first?.message ?? "パラメータが不正です";
+    return NextResponse.json(
+      { error: parsed.error.flatten(), message },
+      { status: 400 }
+    );
   }
 
-  const result = await documentRepository.findMany({
-    documentType: parsed.data.type,
-    search: parsed.data.search,
-    status: parsed.data.status,
-    dateFrom: parsed.data.dateFrom,
-    dateTo: parsed.data.dateTo,
-    clientId: parsed.data.clientId,
-    sortBy: parsed.data.sortBy,
-    sortOrder: parsed.data.sortOrder,
-    page: parsed.data.page,
-    perPage: parsed.data.perPage,
-  });
-  return NextResponse.json(result);
+  try {
+    const result = await documentRepository.findMany({
+      documentType: parsed.data.type,
+      search: parsed.data.search,
+      status: parsed.data.status,
+      dateFrom: parsed.data.dateFrom,
+      dateTo: parsed.data.dateTo,
+      clientId: parsed.data.clientId,
+      sortBy: parsed.data.sortBy,
+      sortOrder: parsed.data.sortOrder,
+      page: parsed.data.page,
+      perPage: parsed.data.perPage,
+    });
+    return NextResponse.json(result);
+  } catch (error) {
+    console.error("[documents GET]", error);
+    return toErrorResponse(error);
+  }
 }
 
 export async function POST(request: NextRequest) {

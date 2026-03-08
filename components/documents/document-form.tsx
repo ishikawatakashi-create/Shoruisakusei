@@ -212,19 +212,21 @@ export function DocumentForm({
   const [autoSaveState, setAutoSaveState] = useState<AutoSaveState>("idle");
 
   useEffect(() => {
+    const safeJson = (r: Response) => r.json().catch(() => null);
     Promise.all([
-      fetch("/api/clients").then((r) => r.json()),
-      fetch("/api/products").then((r) => r.json()),
-      fetch("/api/bank-accounts").then((r) => r.json()),
-      fetch("/api/settings/business").then((r) => r.json()),
+      fetch("/api/clients").then(safeJson),
+      fetch("/api/products").then(safeJson),
+      fetch("/api/bank-accounts").then(safeJson),
+      fetch("/api/settings/business").then(safeJson),
     ]).then(([c, p, b, bi]) => {
-      setClients(c);
-      setProducts(p);
-      setBankAccounts(b);
-      setBusinessInfo(bi);
+      setClients(Array.isArray(c) ? c : []);
+      setProducts(Array.isArray(p) ? p : []);
+      setBankAccounts(Array.isArray(b) ? b : []);
+      setBusinessInfo(bi && typeof bi === "object" ? bi : null);
 
-      if (mode === "create" && !initialData) {
-        const defaultBankAccount = b.find((account: BankAccount) => account.id === bi.defaultBankAccountId);
+      if (mode === "create" && !initialData && bi && typeof bi === "object") {
+        const bankList = Array.isArray(b) ? b : [];
+        const defaultBankAccount = bankList.find((account: BankAccount) => account.id === bi.defaultBankAccountId);
         setFormData((prev) => ({
           ...prev,
           clientHonorific: bi.defaultHonorific || prev.clientHonorific || "御中",

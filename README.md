@@ -158,6 +158,14 @@ datasource db {
 }
 ```
 
+### Vercel デプロイで PostgreSQL を使う場合
+
+サーバーレスでは接続数制限に注意してください。
+
+- **環境変数**: Vercel の「Settings → Environment variables」で `DATABASE_URL` を設定
+- **接続プール**: 接続文字列に `?connection_limit=1` を付けると接続枯渇を防ぎやすい（例: `postgresql://user:pass@host:5432/db?connection_limit=1`）
+- **プールサービス**: Neon・Supabase などの「接続プール用URL」を使うとより安定します
+
 ### 認証の追加
 
 1. **NextAuth.js** または **Supabase Auth** を追加
