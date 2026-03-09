@@ -50,7 +50,7 @@ export function DocumentPreview({ data, businessInfo, bankAccount }: DocumentPre
     : data.bankAccountText || "";
 
   return (
-    <div className="bg-white border rounded shadow-sm p-8 text-[11px] leading-relaxed" style={{ width: "100%", maxWidth: "595px", minHeight: "842px", aspectRatio: "1/1.414" }}>
+    <div className="w-full max-w-[595px] min-h-[842px] aspect-[1/1.414] bg-white border rounded shadow-sm p-8 text-[11px] leading-relaxed">
       {/* Header */}
       <div className="text-center mb-6">
         <h2 className="text-xl font-bold tracking-widest">{title}</h2>

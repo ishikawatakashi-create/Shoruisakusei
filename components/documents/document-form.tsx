@@ -444,7 +444,7 @@ export function DocumentForm({
       const url = URL.createObjectURL(blob);
       window.open(url, "_blank");
       setTimeout(() => URL.revokeObjectURL(url), 5000);
-      toast.success("PDFを生成しました");
+      toast.success("PDFを生成しました。新しいタブで開きました。ローカルでは data/pdfs にも保存されています。");
     } catch {
       toast.error("PDF生成エラー");
     } finally {

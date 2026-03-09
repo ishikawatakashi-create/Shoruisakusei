@@ -64,33 +64,70 @@ export default function BusinessSettingsPage() {
   const [uploading, setUploading] = useState<"logo" | "seal" | null>(null);
 
   useEffect(() => {
-    Promise.all([
-      fetch("/api/settings/business").then((res) => res.json()),
-      fetch("/api/bank-accounts").then((res) => res.json()),
-    ])
-      .then(([data, accounts]) => {
-        setBankAccounts(accounts);
+    let cancelled = false;
+
+    const safeJson = async (res: Response) => res.json().catch(() => null);
+
+    async function loadSettings() {
+      try {
+        const [settingsRes, accountsRes] = await Promise.all([
+          fetch("/api/settings/business"),
+          fetch("/api/bank-accounts"),
+        ]);
+        const [settingsData, accountsData] = await Promise.all([
+          safeJson(settingsRes),
+          safeJson(accountsRes),
+        ]);
+
+        if (cancelled) {
+          return;
+        }
+
+        setBankAccounts(Array.isArray(accountsData) ? accountsData : []);
         setForm({
-          businessName: data.businessName ?? "",
-          tradeName: data.tradeName ?? "",
-          representativeName: data.representativeName ?? "",
-          postalCode: data.postalCode ?? "",
-          address: data.address ?? "",
-          phone: data.phone ?? "",
-          email: data.email ?? "",
-          invoiceRegistrationNo: data.invoiceRegistrationNo ?? "",
-          logoPath: data.logoPath ?? "",
-          sealPath: data.sealPath ?? "",
-          defaultHonorific: data.defaultHonorific ?? "御中",
-          defaultNotes: data.defaultNotes ?? "",
-          taxCalculation: data.taxCalculation ?? "exclusive",
-          roundingMethod: data.roundingMethod ?? "floor",
-          defaultPaymentTerms: data.defaultPaymentTerms ?? "",
-          defaultBankAccountId: data.defaultBankAccountId ?? undefined,
+          businessName: typeof settingsData?.businessName === "string" ? settingsData.businessName : "",
+          tradeName: typeof settingsData?.tradeName === "string" ? settingsData.tradeName : "",
+          representativeName: typeof settingsData?.representativeName === "string" ? settingsData.representativeName : "",
+          postalCode: typeof settingsData?.postalCode === "string" ? settingsData.postalCode : "",
+          address: typeof settingsData?.address === "string" ? settingsData.address : "",
+          phone: typeof settingsData?.phone === "string" ? settingsData.phone : "",
+          email: typeof settingsData?.email === "string" ? settingsData.email : "",
+          invoiceRegistrationNo: typeof settingsData?.invoiceRegistrationNo === "string" ? settingsData.invoiceRegistrationNo : "",
+          logoPath: typeof settingsData?.logoPath === "string" ? settingsData.logoPath : "",
+          sealPath: typeof settingsData?.sealPath === "string" ? settingsData.sealPath : "",
+          defaultHonorific: typeof settingsData?.defaultHonorific === "string" ? settingsData.defaultHonorific : "御中",
+          defaultNotes: typeof settingsData?.defaultNotes === "string" ? settingsData.defaultNotes : "",
+          taxCalculation: typeof settingsData?.taxCalculation === "string" ? settingsData.taxCalculation : "exclusive",
+          roundingMethod: typeof settingsData?.roundingMethod === "string" ? settingsData.roundingMethod : "floor",
+          defaultPaymentTerms: typeof settingsData?.defaultPaymentTerms === "string" ? settingsData.defaultPaymentTerms : "",
+          defaultBankAccountId:
+            typeof settingsData?.defaultBankAccountId === "string"
+              ? settingsData.defaultBankAccountId
+              : undefined,
         });
-      })
-      .catch(() => toast.error("設定の読み込みに失敗しました"))
-      .finally(() => setLoading(false));
+
+        if (!settingsRes.ok || !accountsRes.ok) {
+          toast.error("設定の読み込みに失敗しました");
+        } else if (!Array.isArray(accountsData)) {
+          toast.error("振込先データの形式が不正です");
+        }
+      } catch {
+        if (!cancelled) {
+          setBankAccounts([]);
+          toast.error("設定の読み込みに失敗しました");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void loadSettings();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleUpload = async (type: "logo" | "seal", file?: File) => {

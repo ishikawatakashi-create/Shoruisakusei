@@ -53,8 +53,31 @@ export default function BankAccountsPage() {
   const [saving, setSaving] = useState(false);
 
   const fetchAccounts = useCallback(async () => {
-    const res = await fetch("/api/bank-accounts");
-    setAccounts(await res.json());
+    try {
+      const res = await fetch("/api/bank-accounts");
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        const message =
+          typeof data?.message === "string"
+            ? data.message
+            : "振込先の取得に失敗しました";
+        setAccounts([]);
+        toast.error(message);
+        return;
+      }
+
+      if (!Array.isArray(data)) {
+        setAccounts([]);
+        toast.error("振込先データの形式が不正です");
+        return;
+      }
+
+      setAccounts(data);
+    } catch {
+      setAccounts([]);
+      toast.error("振込先の取得に失敗しました");
+    }
   }, []);
 
   useEffect(() => { fetchAccounts(); }, [fetchAccounts]);

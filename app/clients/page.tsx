@@ -79,8 +79,31 @@ export default function ClientsPage() {
     if (search) params.set("search", search);
     if (viewMode !== "active") params.set("includeArchived", "true");
 
-    const res = await fetch(`/api/clients?${params.toString()}`);
-    setClients(await res.json());
+    try {
+      const res = await fetch(`/api/clients?${params.toString()}`);
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        const message =
+          typeof data?.message === "string"
+            ? data.message
+            : "取引先の取得に失敗しました";
+        setClients([]);
+        toast.error(message);
+        return;
+      }
+
+      if (!Array.isArray(data)) {
+        setClients([]);
+        toast.error("取引先データの形式が不正です");
+        return;
+      }
+
+      setClients(data);
+    } catch {
+      setClients([]);
+      toast.error("取引先の取得に失敗しました");
+    }
   }, [search, viewMode]);
 
   useEffect(() => {

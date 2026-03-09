@@ -156,19 +156,21 @@ function buildPdfHtml(doc: any, businessInfo: any): string {
 
   let taxBreakdownHtml = "";
   for (const breakdown of calculated.taxBreakdown) {
-    taxBreakdownHtml += `<tr><td style="padding:4px 8px;border-bottom:1px solid #ddd">${breakdown.label}</td><td style="text-align:right;padding:4px 8px;border-bottom:1px solid #ddd">税抜 ${formatCurrency(breakdown.subtotal)} / 税 ${formatCurrency(breakdown.taxAmount)}</td></tr>`;
+    taxBreakdownHtml += `<tr><td style="padding:6px 10px;border-bottom:1px solid #333">${breakdown.label}</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #333;white-space:nowrap;min-width:90px">税抜 ${formatCurrency(breakdown.subtotal)}<br><span style="font-size:10px">税 ${formatCurrency(breakdown.taxAmount)}</span></td></tr>`;
   }
 
+  const cellBorder = "1px solid #333";
+  const cellPad = "6px 8px";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const itemRows = (doc.items as any[])
     .map(
       (item) => `
     <tr>
-      <td style="border:1px solid #ddd;padding:4px 6px">${item.productName}${item.description ? `<br><span style="font-size:9px;color:#888">${item.description}</span>` : ""}</td>
-      <td style="border:1px solid #ddd;padding:4px 6px;text-align:right">${formatCurrency(item.unitPrice)}</td>
-      <td style="border:1px solid #ddd;padding:4px 6px;text-align:right">${item.quantity}</td>
-      <td style="border:1px solid #ddd;padding:4px 6px;text-align:center">${item.unit}</td>
-      <td style="border:1px solid #ddd;padding:4px 6px;text-align:right">${formatCurrency(item.amount)}</td>
+      <td style="border:${cellBorder};padding:${cellPad};vertical-align:top">${item.productName}${item.description ? `<br><span style="font-size:9px;color:#555">${item.description}</span>` : ""}</td>
+      <td style="border:${cellBorder};padding:${cellPad};text-align:right;white-space:nowrap">${formatCurrency(item.unitPrice)}</td>
+      <td style="border:${cellBorder};padding:${cellPad};text-align:right">${item.quantity}</td>
+      <td style="border:${cellBorder};padding:${cellPad};text-align:center">${item.unit}</td>
+      <td style="border:${cellBorder};padding:${cellPad};text-align:right;white-space:nowrap">${formatCurrency(item.amount)}</td>
     </tr>`
     )
     .join("");
@@ -216,10 +218,14 @@ function buildPdfHtml(doc: any, businessInfo: any): string {
     }
   }
 
+  const sumTdStyle = "padding:6px 10px;border-bottom:1px solid #333;text-align:right;white-space:nowrap;min-width:90px";
   let withholdingHtml = "";
   if (doc.withholdingTax && doc.withholdingAmount > 0) {
-    withholdingHtml = `<tr><td style="padding:4px 8px;color:#c00">源泉徴収税</td><td style="text-align:right;padding:4px 8px;color:#c00">-${formatCurrency(doc.withholdingAmount)}</td></tr>`;
+    withholdingHtml = `<tr><td style="padding:6px 10px;border-bottom:1px solid #333;color:#c00">源泉徴収税</td><td style="${sumTdStyle};color:#c00">-${formatCurrency(doc.withholdingAmount)}</td></tr>`;
   }
+
+  const thStyle = `border:1px solid #333;padding:6px 8px;background:#e8e8e8;font-weight:bold`;
+  const sumTd = sumTdStyle;
 
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -227,8 +233,12 @@ function buildPdfHtml(doc: any, businessInfo: any): string {
 <meta charset="utf-8">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family:'Hiragino Sans','Yu Gothic','Meiryo',sans-serif; font-size:11px; color:#333; line-height:1.6; }
-  table { border-collapse:collapse; }
+  body { font-family:'Hiragino Sans','Yu Gothic','Meiryo',sans-serif; font-size:11px; color:#333; line-height:1.5; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  table { border-collapse:collapse; table-layout:fixed; }
+  .item-table { width:100%; margin-bottom:16px; }
+  .item-table th, .item-table td { border:1px solid #333; }
+  .sum-table { width:260px; margin-left:auto; margin-bottom:16px; border:1px solid #333; }
+  .sum-table td { border-bottom:1px solid #333; }
 </style>
 </head>
 <body>
@@ -267,21 +277,28 @@ function buildPdfHtml(doc: any, businessInfo: any): string {
     </div>
   </div>
 
-  <div style="border:2px solid #333;border-radius:4px;padding:8px 16px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center">
+  <div style="border:2px solid #333;border-radius:4px;padding:10px 16px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center">
     <span style="font-weight:bold;font-size:12px">${totalLabel}</span>
     <span style="font-size:18px;font-weight:bold">${formatCurrency(doc.totalAmount)}</span>
   </div>
 
   ${receiptExtra}
 
-  <table style="width:100%;margin-bottom:16px">
+  <table class="item-table" style="width:100%">
+    <colgroup>
+      <col style="width:auto">
+      <col style="width:72px">
+      <col style="width:48px">
+      <col style="width:36px">
+      <col style="width:72px">
+    </colgroup>
     <thead>
-      <tr style="background:#f5f5f5">
-        <th style="border:1px solid #ddd;padding:4px 6px;text-align:left">品目</th>
-        <th style="border:1px solid #ddd;padding:4px 6px;text-align:right;width:80px">単価</th>
-        <th style="border:1px solid #ddd;padding:4px 6px;text-align:right;width:50px">数量</th>
-        <th style="border:1px solid #ddd;padding:4px 6px;text-align:center;width:40px">単位</th>
-        <th style="border:1px solid #ddd;padding:4px 6px;text-align:right;width:80px">金額</th>
+      <tr>
+        <th style="${thStyle};text-align:left">品目</th>
+        <th style="${thStyle};text-align:right">単価</th>
+        <th style="${thStyle};text-align:right">数量</th>
+        <th style="${thStyle};text-align:center">単位</th>
+        <th style="${thStyle};text-align:right">金額</th>
       </tr>
     </thead>
     <tbody>
@@ -289,15 +306,13 @@ function buildPdfHtml(doc: any, businessInfo: any): string {
     </tbody>
   </table>
 
-  <div style="display:flex;justify-content:flex-end;margin-bottom:16px">
-    <table style="width:220px">
-      <tr><td style="padding:4px 8px;border-bottom:1px solid #ddd">小計</td><td style="text-align:right;padding:4px 8px;border-bottom:1px solid #ddd">${formatCurrency(doc.subtotal)}</td></tr>
-      ${taxBreakdownHtml}
-      <tr><td style="padding:4px 8px;border-bottom:1px solid #ddd">消費税</td><td style="text-align:right;padding:4px 8px;border-bottom:1px solid #ddd">${formatCurrency(doc.taxAmount)}</td></tr>
-      ${withholdingHtml}
-      <tr><td style="padding:4px 8px;font-weight:bold;border-bottom:2px solid #333">合計</td><td style="text-align:right;padding:4px 8px;font-weight:bold;font-size:14px;border-bottom:2px solid #333">${formatCurrency(doc.totalAmount)}</td></tr>
-    </table>
-  </div>
+  <table class="sum-table">
+    <tr><td style="padding:6px 10px;border-bottom:1px solid #333">小計</td><td style="${sumTd}">${formatCurrency(doc.subtotal)}</td></tr>
+    ${taxBreakdownHtml}
+    <tr><td style="padding:6px 10px;border-bottom:1px solid #333">消費税</td><td style="${sumTd}">${formatCurrency(doc.taxAmount)}</td></tr>
+    ${withholdingHtml}
+    <tr><td style="padding:6px 10px;font-weight:bold;border-bottom:2px solid #333">合計</td><td style="${sumTd};font-weight:bold;font-size:13px;border-bottom:2px solid #333">${formatCurrency(doc.totalAmount)}</td></tr>
+  </table>
 
   ${bankInfo}
 

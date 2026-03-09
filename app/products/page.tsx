@@ -68,8 +68,31 @@ export default function ProductsPage() {
     if (search) params.set("search", search);
     if (viewMode !== "active") params.set("includeArchived", "true");
 
-    const res = await fetch(`/api/products?${params.toString()}`);
-    setProducts(await res.json());
+    try {
+      const res = await fetch(`/api/products?${params.toString()}`);
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        const message =
+          typeof data?.message === "string"
+            ? data.message
+            : "品目の取得に失敗しました";
+        setProducts([]);
+        toast.error(message);
+        return;
+      }
+
+      if (!Array.isArray(data)) {
+        setProducts([]);
+        toast.error("品目データの形式が不正です");
+        return;
+      }
+
+      setProducts(data);
+    } catch {
+      setProducts([]);
+      toast.error("品目の取得に失敗しました");
+    }
   }, [search, viewMode]);
 
   useEffect(() => {

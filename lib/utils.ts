@@ -16,8 +16,11 @@ export function formatCurrency(amount: number): string {
   }).format(amount);
 }
 
-export function formatDate(date: Date | string): string {
+export function formatDate(date: Date | string | null | undefined): string {
+  if (date == null) return "-";
   const d = typeof date === "string" ? parseDateOnly(date) ?? new Date(date) : date;
+  const time = d.getTime();
+  if (Number.isNaN(time)) return "-";
   return new Intl.DateTimeFormat("ja-JP", {
     year: "numeric",
     month: "2-digit",
