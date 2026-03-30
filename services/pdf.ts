@@ -1,5 +1,5 @@
 import path from "path";
-import { mkdir, writeFile } from "fs/promises";
+import { mkdir, readFile, writeFile } from "fs/promises";
 import type { Browser } from "puppeteer";
 import { NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
@@ -14,9 +14,29 @@ import {
 } from "@/types/document";
 
 const isServerless = process.env.VERCEL === "1";
+const PDF_FONT_FAMILY = "PdfNotoSansJP";
+const PDF_FONT_FILES = {
+  regular: path.join(
+    process.cwd(),
+    "node_modules",
+    "@fontsource",
+    "noto-sans-jp",
+    "files",
+    "noto-sans-jp-japanese-400-normal.woff2"
+  ),
+  bold: path.join(
+    process.cwd(),
+    "node_modules",
+    "@fontsource",
+    "noto-sans-jp",
+    "files",
+    "noto-sans-jp-japanese-700-normal.woff2"
+  ),
+} as const;
 
 const globalForPdfBrowser = globalThis as typeof globalThis & {
   pdfBrowserPromise?: Promise<Browser>;
+  pdfFontCssPromise?: Promise<string>;
 };
 
 async function getPdfBrowser(): Promise<Browser> {
@@ -31,15 +51,17 @@ async function getPdfBrowser(): Promise<Browser> {
           executablePath: await chromium.default.executablePath(),
           headless: chromium.default.headless,
         });
-      })().then((browser) => {
-        browser.on("disconnected", () => {
+      })()
+        .then((browser) => {
+          browser.on("disconnected", () => {
+            globalForPdfBrowser.pdfBrowserPromise = undefined;
+          });
+          return browser;
+        })
+        .catch((error) => {
           globalForPdfBrowser.pdfBrowserPromise = undefined;
+          throw error;
         });
-        return browser;
-      }).catch((error) => {
-        globalForPdfBrowser.pdfBrowserPromise = undefined;
-        throw error;
-      });
     } else {
       globalForPdfBrowser.pdfBrowserPromise = import("puppeteer")
         .then(({ default: puppeteer }) =>
@@ -64,6 +86,76 @@ async function getPdfBrowser(): Promise<Browser> {
   return globalForPdfBrowser.pdfBrowserPromise;
 }
 
+async function getPdfFontCss(): Promise<string> {
+  if (!globalForPdfBrowser.pdfFontCssPromise) {
+    globalForPdfBrowser.pdfFontCssPromise = Promise.all([
+      readFontAsDataUrl(PDF_FONT_FILES.regular),
+      readFontAsDataUrl(PDF_FONT_FILES.bold),
+    ])
+      .then(
+        ([regularFontDataUrl, boldFontDataUrl]) => `
+@font-face {
+  font-family: '${PDF_FONT_FAMILY}';
+  font-style: normal;
+  font-display: block;
+  font-weight: 400;
+  src: url(${regularFontDataUrl}) format('woff2');
+}
+
+@font-face {
+  font-family: '${PDF_FONT_FAMILY}';
+  font-style: normal;
+  font-display: block;
+  font-weight: 700;
+  src: url(${boldFontDataUrl}) format('woff2');
+}
+`
+      )
+      .catch((error) => {
+        globalForPdfBrowser.pdfFontCssPromise = undefined;
+        throw error;
+      });
+  }
+
+  return globalForPdfBrowser.pdfFontCssPromise;
+}
+
+async function readFontAsDataUrl(fontPath: string): Promise<string> {
+  const fontBuffer = await readFile(fontPath);
+  return `data:font/woff2;base64,${fontBuffer.toString("base64")}`;
+}
+
+function formatCurrency(n: number): string {
+  return new Intl.NumberFormat("ja-JP", {
+    style: "currency",
+    currency: "JPY",
+    minimumFractionDigits: 0,
+  }).format(n);
+}
+
+function formatDate(d: Date): string {
+  return new Intl.DateTimeFormat("ja-JP", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "UTC",
+  }).format(d);
+}
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function toMultilineHtml(value: unknown, emptyFallback = "&nbsp;"): string {
+  const safeText = escapeHtml(value);
+  return safeText ? safeText.replace(/\r?\n/g, "<br>") : emptyFallback;
+}
+
 export type GeneratePdfResult = { buffer: Buffer; filename: string };
 
 export async function generatePdf(documentId: string): Promise<GeneratePdfResult> {
@@ -80,16 +172,18 @@ export async function generatePdf(documentId: string): Promise<GeneratePdfResult
 
   const filename = `${doc.documentNumber.replace(/[/\\:]/g, "-")}_${Date.now()}.pdf`;
 
-  const html = buildPdfHtml(doc, businessInfo);
+  const html = await buildPdfHtml(doc, businessInfo);
   const browser = await getPdfBrowser();
   const page = await browser.newPage();
 
   let buffer: Buffer;
   try {
     await page.setContent(html, { waitUntil: "networkidle0" });
+    await page.emulateMediaType("screen");
     const pdfOptions = {
       format: "A4" as const,
       printBackground: true,
+      waitForFonts: true,
       margin: { top: "10mm", right: "10mm", bottom: "10mm", left: "10mm" },
     };
     buffer = (await page.pdf(pdfOptions)) as Buffer;
@@ -111,27 +205,11 @@ export async function generatePdf(documentId: string): Promise<GeneratePdfResult
   return { buffer, filename };
 }
 
-function formatCurrency(n: number): string {
-  return new Intl.NumberFormat("ja-JP", {
-    style: "currency",
-    currency: "JPY",
-    minimumFractionDigits: 0,
-  }).format(n);
-}
-
-function formatDate(d: Date): string {
-  return new Intl.DateTimeFormat("ja-JP", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    timeZone: "UTC",
-  }).format(d);
-}
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildPdfHtml(doc: any, businessInfo: any): string {
+async function buildPdfHtml(doc: any, businessInfo: any): Promise<string> {
   const docType = doc.documentType as DocumentType;
   const title = DOCUMENT_TYPE_LABELS[docType];
+  const safeTitle = escapeHtml(title);
   const taxCalculation = (businessInfo?.taxCalculation || "exclusive") as TaxCalculation;
   const roundingMethod = (businessInfo?.roundingMethod || "floor") as RoundingMethod;
   const calculated = calculateTotals(
@@ -156,7 +234,7 @@ function buildPdfHtml(doc: any, businessInfo: any): string {
 
   let taxBreakdownHtml = "";
   for (const breakdown of calculated.taxBreakdown) {
-    taxBreakdownHtml += `<tr><td style="padding:6px 10px;border-bottom:1px solid #333">${breakdown.label}</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #333;white-space:nowrap;min-width:90px">税抜 ${formatCurrency(breakdown.subtotal)}<br><span style="font-size:10px">税 ${formatCurrency(breakdown.taxAmount)}</span></td></tr>`;
+    taxBreakdownHtml += `<tr><td style="padding:6px 10px;border-bottom:1px solid #333">${escapeHtml(breakdown.label)}</td><td style="text-align:right;padding:6px 10px;border-bottom:1px solid #333;white-space:nowrap;min-width:90px">税抜 ${formatCurrency(breakdown.subtotal)}<br><span style="font-size:10px">税 ${formatCurrency(breakdown.taxAmount)}</span></td></tr>`;
   }
 
   const cellBorder = "1px solid #333";
@@ -166,10 +244,10 @@ function buildPdfHtml(doc: any, businessInfo: any): string {
     .map(
       (item) => `
     <tr>
-      <td style="border:${cellBorder};padding:${cellPad};vertical-align:top">${item.productName}${item.description ? `<br><span style="font-size:9px;color:#555">${item.description}</span>` : ""}</td>
+      <td style="border:${cellBorder};padding:${cellPad};vertical-align:top">${escapeHtml(item.productName)}${item.description ? `<br><span style="font-size:9px;color:#555">${toMultilineHtml(item.description, "")}</span>` : ""}</td>
       <td style="border:${cellBorder};padding:${cellPad};text-align:right;white-space:nowrap">${formatCurrency(item.unitPrice)}</td>
       <td style="border:${cellBorder};padding:${cellPad};text-align:right">${item.quantity}</td>
-      <td style="border:${cellBorder};padding:${cellPad};text-align:center">${item.unit}</td>
+      <td style="border:${cellBorder};padding:${cellPad};text-align:center">${escapeHtml(item.unit)}</td>
       <td style="border:${cellBorder};padding:${cellPad};text-align:right;white-space:nowrap">${formatCurrency(item.amount)}</td>
     </tr>`
     )
@@ -183,19 +261,20 @@ function buildPdfHtml(doc: any, businessInfo: any): string {
         : docType === "receipt"
           ? "領収金額"
           : "合計金額";
+  const safeTotalLabel = escapeHtml(totalLabel);
 
   let extraInfo = "";
   if (docType === "estimate" && doc.validUntil) {
-    extraInfo += `<div>有効期限: ${formatDate(doc.validUntil)}</div>`;
+    extraInfo += `<div>有効期限: ${escapeHtml(formatDate(doc.validUntil))}</div>`;
   }
   if (docType === "delivery_note" && doc.deliveryDate) {
-    extraInfo += `<div>納品日: ${formatDate(doc.deliveryDate)}</div>`;
+    extraInfo += `<div>納品日: ${escapeHtml(formatDate(doc.deliveryDate))}</div>`;
   }
   if (docType === "invoice" && doc.paymentDueDate) {
-    extraInfo += `<div>お支払期限: ${formatDate(doc.paymentDueDate)}</div>`;
+    extraInfo += `<div>お支払期限: ${escapeHtml(formatDate(doc.paymentDueDate))}</div>`;
   }
   if (docType === "receipt" && doc.receiptDate) {
-    extraInfo += `<div>領収日: ${formatDate(doc.receiptDate)}</div>`;
+    extraInfo += `<div>領収日: ${escapeHtml(formatDate(doc.receiptDate))}</div>`;
   }
 
   let bankInfo = "";
@@ -207,15 +286,13 @@ function buildPdfHtml(doc: any, businessInfo: any): string {
     bankInfo = `
       <div style="margin-top:12px;font-size:10px">
         <div style="font-weight:bold;margin-bottom:4px">振込先</div>
-        <div style="border-bottom:1px solid #333;padding-bottom:6px;min-height:16px">${bankText || "&nbsp;"}</div>
+        <div style="border-bottom:1px solid #333;padding-bottom:6px;min-height:16px;white-space:pre-wrap">${toMultilineHtml(bankText)}</div>
       </div>`;
   }
 
   let receiptExtra = "";
-  if (docType === "receipt") {
-    if (doc.proviso) {
-      receiptExtra += `<div style="margin-bottom:8px;font-size:10px"><strong>但し:</strong> ${doc.proviso}</div>`;
-    }
+  if (docType === "receipt" && doc.proviso) {
+    receiptExtra += `<div style="margin-bottom:8px;font-size:10px"><strong>但し:</strong> ${escapeHtml(doc.proviso)}</div>`;
   }
 
   const sumTdStyle = "padding:6px 10px;border-bottom:1px solid #333;text-align:right;white-space:nowrap;min-width:90px";
@@ -226,14 +303,16 @@ function buildPdfHtml(doc: any, businessInfo: any): string {
 
   const thStyle = `border:1px solid #333;padding:6px 8px;background:#e8e8e8;font-weight:bold`;
   const sumTd = sumTdStyle;
+  const fontCss = await getPdfFontCss();
 
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
 <style>
+  ${fontCss}
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family:'Hiragino Sans','Yu Gothic','Meiryo',sans-serif; font-size:11px; color:#333; line-height:1.5; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  body { font-family:'${PDF_FONT_FAMILY}','Hiragino Sans','Yu Gothic','Meiryo',sans-serif; font-size:11px; color:#333; line-height:1.5; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
   table { border-collapse:collapse; table-layout:fixed; }
   .item-table { width:100%; margin-bottom:16px; }
   .item-table th, .item-table td { border:1px solid #333; }
@@ -243,42 +322,42 @@ function buildPdfHtml(doc: any, businessInfo: any): string {
 </head>
 <body>
   <div style="text-align:center;margin-bottom:24px">
-    <h1 style="font-size:20px;letter-spacing:8px;font-weight:bold">${title}</h1>
+    <h1 style="font-size:20px;letter-spacing:8px;font-weight:bold">${safeTitle}</h1>
   </div>
 
   <div style="display:flex;justify-content:space-between;margin-bottom:20px">
     <div style="width:48%">
       <div style="border-bottom:2px solid #333;padding-bottom:4px;margin-bottom:4px">
-        <span style="font-size:14px;font-weight:bold">${doc.clientDisplayName}</span>
-        ${doc.clientDepartment ? `<span style="font-size:10px;margin-left:4px">${doc.clientDepartment}</span>` : ""}
-        ${doc.clientContactName ? `<span style="font-size:10px;margin-left:4px">${doc.clientContactName}</span>` : ""}
-        <span style="margin-left:4px">${doc.clientHonorific}</span>
+        <span style="font-size:14px;font-weight:bold">${escapeHtml(doc.clientDisplayName)}</span>
+        ${doc.clientDepartment ? `<span style="font-size:10px;margin-left:4px">${escapeHtml(doc.clientDepartment)}</span>` : ""}
+        ${doc.clientContactName ? `<span style="font-size:10px;margin-left:4px">${escapeHtml(doc.clientContactName)}</span>` : ""}
+        <span style="margin-left:4px">${escapeHtml(doc.clientHonorific)}</span>
       </div>
-      ${doc.clientAddress ? `<div style="font-size:10px;color:#666">${doc.clientAddress}</div>` : ""}
+      ${doc.clientAddress ? `<div style="font-size:10px;color:#666;white-space:pre-wrap">${toMultilineHtml(doc.clientAddress, "")}</div>` : ""}
     </div>
     <div style="width:45%;text-align:right;font-size:10px">
-      <div style="font-weight:bold;font-size:12px">${businessInfo?.businessName || ""}</div>
-      ${businessInfo?.postalCode ? `<div>〒${businessInfo.postalCode}</div>` : ""}
-      ${businessInfo?.address ? `<div>${businessInfo.address}</div>` : ""}
-      ${businessInfo?.phone ? `<div>TEL: ${businessInfo.phone}</div>` : ""}
-      ${businessInfo?.email ? `<div>${businessInfo.email}</div>` : ""}
-      ${businessInfo?.invoiceRegistrationNo ? `<div style="margin-top:4px;font-size:9px">登録番号: ${businessInfo.invoiceRegistrationNo}</div>` : ""}
+      <div style="font-weight:bold;font-size:12px">${escapeHtml(businessInfo?.businessName || "")}</div>
+      ${businessInfo?.postalCode ? `<div>〒${escapeHtml(businessInfo.postalCode)}</div>` : ""}
+      ${businessInfo?.address ? `<div style="white-space:pre-wrap">${toMultilineHtml(businessInfo.address, "")}</div>` : ""}
+      ${businessInfo?.phone ? `<div>TEL: ${escapeHtml(businessInfo.phone)}</div>` : ""}
+      ${businessInfo?.email ? `<div>${escapeHtml(businessInfo.email)}</div>` : ""}
+      ${businessInfo?.invoiceRegistrationNo ? `<div style="margin-top:4px;font-size:9px">登録番号: ${escapeHtml(businessInfo.invoiceRegistrationNo)}</div>` : ""}
     </div>
   </div>
 
   <div style="display:flex;justify-content:space-between;margin-bottom:16px;font-size:10px">
     <div>
-      ${doc.subject ? `<div><strong>件名:</strong> ${doc.subject}</div>` : ""}
+      ${doc.subject ? `<div><strong>件名:</strong> ${escapeHtml(doc.subject)}</div>` : ""}
     </div>
     <div style="text-align:right">
-      <div>${title}番号: ${doc.documentNumber}</div>
-      <div>発行日: ${formatDate(doc.issueDate)}</div>
+      <div>${safeTitle}番号: ${escapeHtml(doc.documentNumber)}</div>
+      <div>発行日: ${escapeHtml(formatDate(doc.issueDate))}</div>
       ${extraInfo}
     </div>
   </div>
 
   <div style="border:2px solid #333;border-radius:4px;padding:10px 16px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center">
-    <span style="font-weight:bold;font-size:12px">${totalLabel}</span>
+    <span style="font-weight:bold;font-size:12px">${safeTotalLabel}</span>
     <span style="font-size:18px;font-weight:bold">${formatCurrency(doc.totalAmount)}</span>
   </div>
 
@@ -318,7 +397,7 @@ function buildPdfHtml(doc: any, businessInfo: any): string {
 
   <div style="margin-top:12px;font-size:10px">
     <div style="font-weight:bold;margin-bottom:4px">備考</div>
-    <div style="border-bottom:1px solid #333;padding-bottom:6px;min-height:16px;white-space:pre-wrap;color:#555">${doc.notes || "&nbsp;"}</div>
+    <div style="border-bottom:1px solid #333;padding-bottom:6px;min-height:16px;white-space:pre-wrap;color:#555">${toMultilineHtml(doc.notes)}</div>
   </div>
 
   ${
